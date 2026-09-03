@@ -29,6 +29,14 @@ function genId(): string {
   return `id-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
+// A tabela `profiles` é a única exceção ao formato genérico (id, data jsonb):
+// ela tem colunas reais (username, name, roles, etc — ver supabase/schema.sql),
+// porque é ligada ao Supabase Auth. As funções abaixo tratam essa exceção.
+const FLAT_TABLES = new Set(['profiles']);
+function isFlatTable(table: string): boolean {
+  return FLAT_TABLES.has(table);
+}
+
 // O app sempre chama collection()/doc() com o mesmo prefixo fixo:
 //   collection(db, 'artifacts', appId, 'public', 'data', <tabela>)
 //   doc(db, 'artifacts', appId, 'public', 'data', <tabela>, <id>)
@@ -53,6 +61,19 @@ export function doc(dbOrRef: unknown, ...segments: string[]): DocRef {
 
 export async function setDoc(ref: DocRef, data: Record<string, unknown>, opts?: { merge?: boolean }): Promise<void> {
   if (!isSupabaseConfigured) throw new Error('Supabase não configurado.');
+
+  if (isFlatTable(ref.table)) {
+    // Tabela com colunas reais: grava os campos diretamente, sem envelope "data".
+    let row: Record<string, unknown> = { ...data, id: ref.id };
+    if (opts?.merge) {
+      const { data: existing } = await supabase.from(ref.table).select('*').eq('id', ref.id).maybeSingle();
+      row = { ...(existing ?? {}), ...data, id: ref.id };
+    }
+    const { error } = await supabase.from(ref.table).upsert(row);
+    if (error) throw error;
+    return;
+  }
+
   let payloadData: Record<string, unknown> = data;
   if (opts?.merge) {
     const { data: existing } = await supabase.from(ref.table).select('data').eq('id', ref.id).maybeSingle();
@@ -97,8 +118,10 @@ export function onSnapshot(
 
   let cancelled = false;
 
+  const flat = isFlatTable(ref.table);
+
   const fetchAll = async () => {
-    const { data, error } = await supabase.from(ref.table).select('id, data');
+    const { data, error } = await supabase.from(ref.table).select(flat ? '*' : 'id, data');
     if (cancelled) return;
     if (error) {
       onError?.(error);
@@ -106,7 +129,7 @@ export function onSnapshot(
     }
     const docs: SnapshotDoc[] = (data ?? []).map((row) => ({
       id: row.id as string,
-      data: () => (row.data as Record<string, unknown>) ?? {},
+      data: () => (flat ? (row as Record<string, unknown>) : ((row.data as Record<string, unknown>) ?? {})),
     }));
     onNext({ empty: docs.length === 0, docs });
   };
