@@ -63,13 +63,17 @@ export async function setDoc(ref: DocRef, data: Record<string, unknown>, opts?: 
   if (!isSupabaseConfigured) throw new Error('Supabase não configurado.');
 
   if (isFlatTable(ref.table)) {
-    // Tabela com colunas reais: grava os campos diretamente, sem envelope "data".
-    let row: Record<string, unknown> = { ...data, id: ref.id };
-    if (opts?.merge) {
-      const { data: existing } = await supabase.from(ref.table).select('*').eq('id', ref.id).maybeSingle();
-      row = { ...(existing ?? {}), ...data, id: ref.id };
-    }
-    const { error } = await supabase.from(ref.table).upsert(row);
+    // Tabela com colunas reais (profiles): a linha já existe sempre (é criada
+    // pela Edge Function admin-users, com privilégio de servidor) — daqui só
+    // vem atualização de campos, nunca criação. Por isso usamos UPDATE puro,
+    // não upsert: um upsert vira, por baixo, um "insert ... on conflict do
+    // update", e isso exige permissão de INSERT na política de RLS, que de
+    // propósito não damos para usuários comuns nesta tabela (só a service
+    // role, via Edge Function, pode criar linha nova). Um UPDATE puro só
+    // depende da política de UPDATE, que existe.
+    const row = { ...data };
+    delete (row as Record<string, unknown>).id;
+    const { error } = await supabase.from(ref.table).update(row).eq('id', ref.id);
     if (error) throw error;
     return;
   }
