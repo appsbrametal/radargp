@@ -9,7 +9,7 @@ import {
   AlertCircle, Clock, Save, Sparkles, Loader2, Bot, FileText,
   AlignLeft, CalendarDays, Activity, Trash2, AlertTriangle,
   Database, FileSpreadsheet, FileJson, FolderTree,
-  ChevronUp, ChevronDown, ArrowUpDown, RefreshCcw, Printer, Kanban, XCircle, Tag,
+  ChevronUp, ChevronDown, ChevronLeft, ChevronRight, ArrowUpDown, RefreshCcw, Printer, Kanban, XCircle, Tag,
   DollarSign, ClipboardList, Settings, Radar, LogOut, Shield, Lock, Unlock, KeyRound, Map,
   Radio, LogIn, TrendingUp
 } from 'lucide-react';
@@ -258,7 +258,18 @@ const isTicketOverdue = (t, now = Date.now()) => {
 const friendlyStatusLabel = (status) => (status || '').replace(/^\d+\s*-\s*/, '');
 
 // --- COMPONENTES REUTILIZÁVEIS ---
-function RadarLogo({ className = '' }) {
+function RadarLogo({ className = '', compact = false }) {
+  // `compact` é usado quando a barra lateral está recolhida: mantém só o
+  // ícone girando (identidade visual reconhecível), sem o nome por extenso
+  // e o slogan, que não caberiam numa coluna só de ícones.
+  if (compact) {
+    return (
+      <div className={`relative flex items-center justify-center text-blue-500 shrink-0 ${className}`}>
+        <Radar size={26} className="animate-[spin_4s_linear_infinite]" />
+        <div className="absolute inset-0 border-2 border-blue-500 rounded-full animate-ping opacity-30"></div>
+      </div>
+    );
+  }
   return (
     <div className={`flex flex-col items-center justify-center select-none ${className}`}>
       <div className="flex items-center gap-2">
@@ -272,6 +283,23 @@ function RadarLogo({ className = '' }) {
         Solução em gestão de demandas
       </p>
     </div>
+  );
+}
+
+// Item de navegação da barra lateral: com a barra recolhida, mostra só o
+// ícone centralizado e move o rótulo para o `title` (tooltip nativo do
+// navegador ao passar o mouse), em vez de duplicar o botão inteiro em cada
+// um dos ~12 itens do menu com um `if` para o modo recolhido.
+function NavButton({ icon, label, isActive, onClick, collapsed }) {
+  return (
+    <button
+      onClick={onClick}
+      title={collapsed ? label : undefined}
+      className={`w-full flex items-center rounded-lg transition-colors ${collapsed ? 'justify-center py-3' : 'gap-3 px-4 py-3'} ${isActive ? 'bg-blue-600' : 'text-slate-300 hover:bg-slate-800'}`}
+    >
+      {icon}
+      {!collapsed && <span className="truncate">{label}</span>}
+    </button>
   );
 }
 
@@ -403,6 +431,23 @@ export default function App() {
   const [systemUser, setSystemUser] = useState<any>(null); // Utilizador Logado
 
   const [activeTab, setActiveTab] = useState('dashboard');
+  // Preferência de UI (recolher a barra lateral pra só ícones) — persistida
+  // localmente para o usuário não precisar reabrir a cada visita.
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem('radar_sidebar_collapsed') === '1';
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem('radar_sidebar_collapsed', sidebarCollapsed ? '1' : '0');
+    } catch {
+      // Armazenamento local indisponível (modo privado, etc.) — a preferência
+      // simplesmente não persiste entre sessões, sem quebrar a navegação.
+    }
+  }, [sidebarCollapsed]);
   const [selectedTicket, setSelectedTicket] = useState<any>(null);
   const [isNewTicket, setIsNewTicket] = useState(false);
   const [ticketToDelete, setTicketToDelete] = useState<any>(null);
@@ -960,50 +1005,65 @@ export default function App() {
         }
       `}</style>
       <div className="min-h-screen bg-slate-50 flex flex-col md:flex-row font-sans text-slate-800 print:block print:bg-white">
-        <aside className="w-full md:w-64 bg-slate-900 text-white flex flex-col shadow-xl z-10 shrink-0 print:hidden">
-          <div className="p-6 border-b border-slate-800 bg-slate-950/30">
-            <RadarLogo className="scale-95 origin-left" />
-            <div className="flex items-center justify-between mt-6">
-              <p className="text-[10px] text-slate-400 flex items-center gap-1"><Sparkles size={12} className="text-yellow-400"/> AI Powered</p>
-              <span className="text-[10px] font-mono text-slate-500 bg-slate-800/50 px-2 py-0.5 rounded-full border border-slate-700/50 cursor-default" title="Versão 0.2.3 (Múltiplos Perfis)">v0.2.3</span>
+        <aside className={`w-full ${sidebarCollapsed ? 'md:w-20' : 'md:w-64'} bg-slate-900 text-white flex flex-col shadow-xl z-10 shrink-0 print:hidden transition-[width] duration-200`}>
+          <div className={`border-b border-slate-800 bg-slate-950/30 ${sidebarCollapsed ? 'p-3' : 'p-6'}`}>
+            <div className={`flex items-center ${sidebarCollapsed ? 'flex-col gap-2' : 'justify-between'}`}>
+              <RadarLogo compact={sidebarCollapsed} className={sidebarCollapsed ? '' : 'scale-95 origin-left'} />
+              {/* Recolher/expandir só existe em telas médias+ (md:) — no celular a barra
+                  já vira uma faixa no topo, onde esconder rótulos não ganha espaço real. */}
+              <button
+                onClick={() => setSidebarCollapsed(v => !v)}
+                className="hidden md:flex items-center justify-center w-7 h-7 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors shrink-0"
+                title={sidebarCollapsed ? 'Expandir menu' : 'Recolher menu'}
+              >
+                {sidebarCollapsed ? <ChevronRight size={16}/> : <ChevronLeft size={16}/>}
+              </button>
             </div>
+            {!sidebarCollapsed && (
+              <div className="flex items-center justify-between mt-6">
+                <p className="text-[10px] text-slate-400 flex items-center gap-1"><Sparkles size={12} className="text-yellow-400"/> AI Powered</p>
+                <span className="text-[10px] font-mono text-slate-500 bg-slate-800/50 px-2 py-0.5 rounded-full border border-slate-700/50 cursor-default" title="Versão 0.2.3 (Múltiplos Perfis)">v0.2.3</span>
+              </div>
+            )}
           </div>
-          
+
           {(systemUser.roles?.includes('Admin') || systemUser.roles?.includes('Key User')) && (
-            <div className="px-4 mb-4">
-               <button onClick={handleCreateNewTicket} className="w-full bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-3 rounded-lg flex items-center justify-center gap-2 text-sm font-bold transition-all shadow-lg border border-emerald-400 active:scale-95">
-                 <Plus size={20} /> Nova Demanda
+            <div className={`mb-4 ${sidebarCollapsed ? 'px-2' : 'px-4'}`}>
+               <button onClick={handleCreateNewTicket} title="Nova Demanda" className={`w-full bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg flex items-center justify-center gap-2 text-sm font-bold transition-all shadow-lg border border-emerald-400 active:scale-95 ${sidebarCollapsed ? 'p-3' : 'px-4 py-3'}`}>
+                 <Plus size={20} /> {!sidebarCollapsed && 'Nova Demanda'}
                </button>
             </div>
           )}
 
-          <nav className="flex-1 px-4 space-y-2 overflow-y-auto pb-4">
-            <button onClick={() => setActiveTab('dashboard')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${activeTab === 'dashboard' ? 'bg-blue-600' : 'text-slate-300 hover:bg-slate-800'}`}><LayoutDashboard size={20} /> Principal</button>
-            <button onClick={() => setActiveTab('statistics')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${activeTab === 'statistics' ? 'bg-blue-600' : 'text-slate-300 hover:bg-slate-800'}`}><TrendingUp size={20} /> Dashboards Estatísticos</button>
-            <button onClick={() => setActiveTab('projects')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${activeTab === 'projects' ? 'bg-blue-600' : 'text-slate-300 hover:bg-slate-800'}`}><FolderTree size={20} /> Capas (Projetos)</button>
-            <button onClick={() => setActiveTab('roadmap')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${activeTab === 'roadmap' ? 'bg-blue-600' : 'text-slate-300 hover:bg-slate-800'}`}><Map size={20} /> Roadmap Global</button>
-            <button onClick={() => setActiveTab('kanban')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${activeTab === 'kanban' ? 'bg-blue-600' : 'text-slate-300 hover:bg-slate-800'}`}><Kanban size={20} /> Kanban</button>
-            <button onClick={() => setActiveTab('list')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${activeTab === 'list' ? 'bg-blue-600' : 'text-slate-300 hover:bg-slate-800'}`}><ListTodo size={20} /> Demandas</button>
-            <button onClick={() => setActiveTab('statusreport')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${activeTab === 'statusreport' ? 'bg-blue-600' : 'text-slate-300 hover:bg-slate-800'}`}><ClipboardList size={20} /> Status Report</button>
-            <button onClick={() => setActiveTab('onepage')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${activeTab === 'onepage' ? 'bg-blue-600' : 'text-slate-300 hover:bg-slate-800'}`}><FileText size={20} /> One Page</button>
-            <button onClick={() => setActiveTab('pdfexport')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${activeTab === 'pdfexport' ? 'bg-blue-600' : 'text-slate-300 hover:bg-slate-800'}`}><Printer size={20} /> Relatório PDF</button>
-            
+          <nav className={`flex-1 space-y-2 overflow-y-auto pb-4 ${sidebarCollapsed ? 'px-2' : 'px-4'}`}>
+            <NavButton collapsed={sidebarCollapsed} icon={<LayoutDashboard size={20} />} label="Principal" isActive={activeTab === 'dashboard'} onClick={() => setActiveTab('dashboard')} />
+            <NavButton collapsed={sidebarCollapsed} icon={<TrendingUp size={20} />} label="Dashboards Estatísticos" isActive={activeTab === 'statistics'} onClick={() => setActiveTab('statistics')} />
+            <NavButton collapsed={sidebarCollapsed} icon={<FolderTree size={20} />} label="Capas (Projetos)" isActive={activeTab === 'projects'} onClick={() => setActiveTab('projects')} />
+            <NavButton collapsed={sidebarCollapsed} icon={<Map size={20} />} label="Roadmap Global" isActive={activeTab === 'roadmap'} onClick={() => setActiveTab('roadmap')} />
+            <NavButton collapsed={sidebarCollapsed} icon={<Kanban size={20} />} label="Kanban" isActive={activeTab === 'kanban'} onClick={() => setActiveTab('kanban')} />
+            <NavButton collapsed={sidebarCollapsed} icon={<ListTodo size={20} />} label="Demandas" isActive={activeTab === 'list'} onClick={() => setActiveTab('list')} />
+            <NavButton collapsed={sidebarCollapsed} icon={<ClipboardList size={20} />} label="Status Report" isActive={activeTab === 'statusreport'} onClick={() => setActiveTab('statusreport')} />
+            <NavButton collapsed={sidebarCollapsed} icon={<FileText size={20} />} label="One Page" isActive={activeTab === 'onepage'} onClick={() => setActiveTab('onepage')} />
+            <NavButton collapsed={sidebarCollapsed} icon={<Printer size={20} />} label="Relatório PDF" isActive={activeTab === 'pdfexport'} onClick={() => setActiveTab('pdfexport')} />
+
             {systemUser.roles?.includes('Admin') && (
               <>
-                <button onClick={() => setActiveTab('export')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${activeTab === 'export' ? 'bg-blue-600' : 'text-slate-300 hover:bg-slate-800'}`}><Database size={20} /> Backup Dados</button>
-                <button onClick={() => setActiveTab('accesslogs')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${activeTab === 'accesslogs' ? 'bg-blue-600' : 'text-slate-300 hover:bg-slate-800'}`}><Radio size={20} /> Monitoramento (Logs)</button>
+                <NavButton collapsed={sidebarCollapsed} icon={<Database size={20} />} label="Backup Dados" isActive={activeTab === 'export'} onClick={() => setActiveTab('export')} />
+                <NavButton collapsed={sidebarCollapsed} icon={<Radio size={20} />} label="Monitoramento (Logs)" isActive={activeTab === 'accesslogs'} onClick={() => setActiveTab('accesslogs')} />
                 <div className="pt-4 mt-4 border-t border-slate-800"></div>
-                <button onClick={() => setActiveTab('settings')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${activeTab === 'settings' ? 'bg-blue-600' : 'text-slate-300 hover:bg-slate-800'}`}><Settings size={20} /> Configurações</button>
+                <NavButton collapsed={sidebarCollapsed} icon={<Settings size={20} />} label="Configurações" isActive={activeTab === 'settings'} onClick={() => setActiveTab('settings')} />
               </>
             )}
           </nav>
-          
-          <div className="p-4 border-t border-slate-800 bg-slate-950/50 mt-auto shrink-0 flex items-center justify-between">
-            <div className="flex flex-col overflow-hidden mr-2">
-               <span className="text-sm font-bold text-white truncate">{systemUser.name}</span>
-               <span className="text-[10px] uppercase font-bold text-slate-400 truncate flex items-center gap-1"><Shield size={10}/> Perfil: {systemUser.roles?.join(', ')}</span>
-            </div>
-            <div className="flex items-center gap-1 shrink-0">
+
+          <div className={`border-t border-slate-800 bg-slate-950/50 mt-auto shrink-0 flex items-center ${sidebarCollapsed ? 'flex-col gap-2 p-3' : 'justify-between p-4'}`}>
+            {!sidebarCollapsed && (
+              <div className="flex flex-col overflow-hidden mr-2">
+                 <span className="text-sm font-bold text-white truncate">{systemUser.name}</span>
+                 <span className="text-[10px] uppercase font-bold text-slate-400 truncate flex items-center gap-1"><Shield size={10}/> Perfil: {systemUser.roles?.join(', ')}</span>
+              </div>
+            )}
+            <div className={`flex items-center gap-1 shrink-0 ${sidebarCollapsed ? 'flex-col' : ''}`}>
               <button onClick={() => setShowProfileModal(true)} className="p-2 bg-slate-800 hover:bg-blue-500 rounded-lg text-slate-300 hover:text-white transition-colors" title="Redefinir Senha"><KeyRound size={16}/></button>
               <button onClick={handleLogout} className="p-2 bg-slate-800 hover:bg-red-600 rounded-lg text-slate-300 hover:text-white transition-colors" title="Encerrar Sessão"><LogOut size={16}/></button>
             </div>
