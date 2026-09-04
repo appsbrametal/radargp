@@ -2993,6 +2993,35 @@ function PdfReportView({ tickets, showToast }) {
   // de rede/proxy corporativo). O PDF é montado página a página (uma demanda
   // por página, replicando o que a classe "break-after-page" já fazia na
   // impressão pelo navegador).
+  //
+  // Segunda causa raiz encontrada (a folha de estilos era carregada, mas o
+  // PDF saía sem nenhuma formatação — só texto corrido): o html2canvas
+  // reconstrói a página numa cópia (clone) isolada e, para isso, precisa
+  // reler a folha de estilos por conta própria; reproduzi em laboratório um
+  // caso em que essa releitura falha silenciosamente (mesmo com a página já
+  // 100% carregada e exibida corretamente na tela) e o resultado é
+  // exatamente o que foi reportado: card/grid/cores desaparecem, sobra só o
+  // texto em ordem, com uma exceção pontual aqui ou ali colorida via estilo
+  // inline. A correção definitiva é não depender dessa releitura: com o hook
+  // "onclone" do html2canvas, antes de capturar, copiamos o estilo já
+  // computado (o que o navegador está exibindo de verdade, elemento por
+  // elemento) diretamente para o clone, como estilo inline. Assim o
+  // html2canvas não precisa mais reinterpretar a folha de estilos — ele já
+  // recebe o resultado final, garantido de bater com o que aparece na tela.
+  function inlineComputedStyles(source: Element, clone: Element) {
+    const sourceStyle = window.getComputedStyle(source);
+    const cloneStyle = (clone as HTMLElement).style;
+    for (let i = 0; i < sourceStyle.length; i++) {
+      const prop = sourceStyle.item(i);
+      cloneStyle.setProperty(prop, sourceStyle.getPropertyValue(prop), sourceStyle.getPropertyPriority(prop));
+    }
+    const sourceChildren = source.children;
+    const cloneChildren = clone.children;
+    for (let i = 0; i < sourceChildren.length; i++) {
+      inlineComputedStyles(sourceChildren[i], cloneChildren[i]);
+    }
+  }
+
   const handleDownloadPDF = async () => {
     if (showToast) showToast("A gerar arquivo PDF. Isto pode demorar alguns segundos...", "success");
 
@@ -3011,7 +3040,14 @@ function PdfReportView({ tickets, showToast }) {
       const usableHeight = pageHeight - margin * 2;
 
       for (let i = 0; i < pages.length; i++) {
-        const canvas = await html2canvas(pages[i], { scale: 2, windowWidth: 1200, useCORS: true });
+        const canvas = await html2canvas(pages[i], {
+          scale: 2,
+          windowWidth: 1200,
+          useCORS: true,
+          onclone: (_doc, clonedEl) => {
+            inlineComputedStyles(pages[i], clonedEl);
+          },
+        });
         const imgData = canvas.toDataURL('image/jpeg', 0.98);
         let renderWidth = usableWidth;
         let renderHeight = (canvas.height * usableWidth) / canvas.width;
