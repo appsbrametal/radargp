@@ -210,6 +210,53 @@ const sortLogsAsc = (logs) => {
   });
 };
 
+// Calcula o intervalo de datas planejado/realizado de uma demanda a partir do
+// cronograma (mesma regra usada no Roadmap: usa a data real quando existe,
+// senão cai para a planejada). Reaproveitado tanto pelo Roadmap quanto pelo
+// indicador "Demandas Atrasadas" da página Principal, para que as duas telas
+// concordem sobre o que conta como atrasado.
+const getTicketScheduleRange = (t) => {
+  let tMin = Infinity;
+  let tMax = 0;
+  let hasDates = false;
+  const schedule = t.schedule || {};
+  const steps = t.customSteps && t.customSteps.length > 0 ? t.customSteps : SCHEDULE_STEPS;
+
+  steps.forEach(step => {
+    const phase = schedule[step];
+    if (phase) {
+      const pStart = phase.plannedStart ? new Date(phase.plannedStart + 'T00:00:00').getTime() : null;
+      const pEnd = phase.plannedEnd ? new Date(phase.plannedEnd + 'T00:00:00').getTime() : null;
+      const aStart = phase.actualStart ? new Date(phase.actualStart + 'T00:00:00').getTime() : null;
+      const aEnd = phase.actualEnd ? new Date(phase.actualEnd + 'T00:00:00').getTime() : null;
+
+      const start = aStart || pStart;
+      const end = aEnd || pEnd;
+
+      if (start) { tMin = Math.min(tMin, start); hasDates = true; }
+      if (end) { tMax = Math.max(tMax, end); hasDates = true; }
+    }
+  });
+
+  if (hasDates && tMax < tMin) tMax = tMin + 86400000;
+  return { tMin: hasDates ? tMin : null, tMax: hasDates ? tMax : null, hasDates };
+};
+
+// Uma demanda está atrasada quando ainda está em aberto (não concluída, não
+// cancelada/paralisada/bloqueada — mesmo critério de "aberta" do Roadmap) e a
+// data final do cronograma já passou.
+const isTicketOverdue = (t, now = Date.now()) => {
+  const isOpen = t.status !== '10 - Concluído' && !(t.status || '').startsWith('00');
+  if (!isOpen) return false;
+  const { tMax, hasDates } = getTicketScheduleRange(t);
+  return hasDates && tMax < now;
+};
+
+// Remove o prefixo numérico de ordenação ("00 - ", "1 - "...) dos status para
+// exibição em legendas e rótulos — a numeração existe para ordenar as colunas
+// no banco, não é algo que o usuário final precise ler.
+const friendlyStatusLabel = (status) => (status || '').replace(/^\d+\s*-\s*/, '');
+
 // --- COMPONENTES REUTILIZÁVEIS ---
 function RadarLogo({ className = '' }) {
   return (
@@ -228,17 +275,18 @@ function RadarLogo({ className = '' }) {
   );
 }
 
-function StatCard({ title, value, icon, color, onClick, isSelected }) {
+function StatCard({ title, value, icon, color, onClick, isSelected, interactive = true, hint }) {
   return (
-    <div 
-      onClick={onClick}
-      className={`bg-white p-4 rounded-xl shadow-sm border cursor-pointer transition-all flex flex-col overflow-hidden min-w-0 ${isSelected ? 'ring-2 ring-blue-500 border-blue-500 bg-blue-50' : 'border-slate-200 hover:border-slate-300 hover:shadow-md'}`}
+    <div
+      onClick={interactive ? onClick : undefined}
+      className={`bg-white p-4 rounded-xl shadow-sm border transition-all flex flex-col overflow-hidden min-w-0 ${interactive ? 'cursor-pointer' : ''} ${isSelected ? 'ring-2 ring-blue-500 border-blue-500 bg-blue-50' : 'border-slate-200 hover:border-slate-300 hover:shadow-md'}`}
     >
       <div className="flex items-center justify-between mb-3 gap-2">
         <h3 className="text-sm font-semibold text-slate-600 truncate flex-1">{title}</h3>
         <div className={`${color} text-white p-2 rounded-lg shrink-0`}>{icon}</div>
       </div>
       <p className="text-2xl font-black text-slate-800 truncate">{value}</p>
+      {hint && <p className="text-[11px] text-slate-400 mt-0.5 truncate">{hint}</p>}
     </div>
   );
 }
@@ -305,6 +353,24 @@ function MultiSelectFilter({ options, selected, onChange, label }) {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+// Filtro compacto de valor único: rótulo e seleção vivem lado a lado dentro
+// de uma única pílula, em vez do padrão anterior (rótulo em cima, caixa
+// embaixo) que empilhava a barra de filtros em duas linhas por campo.
+function FilterSelect({ label, value, onChange, options, className = '' }) {
+  return (
+    <div className={`flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-lg pl-2.5 pr-1.5 py-1.5 hover:border-slate-300 focus-within:ring-2 focus-within:ring-blue-500 focus-within:border-blue-500 transition-colors ${className}`}>
+      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 shrink-0">{label}</span>
+      <select
+        className="bg-transparent outline-none text-sm font-medium text-slate-700 cursor-pointer min-w-0 max-w-[160px] truncate"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      >
+        {options.map(o => <option key={o} value={o}>{o}</option>)}
+      </select>
     </div>
   );
 }
@@ -1769,6 +1835,34 @@ function DashboardView({ tickets, onNavigateToList }) {
   const bloqueadas = baseFilteredTickets.filter(t => t.status === '00 - Bloqueado').length;
   const canceladas = baseFilteredTickets.filter(t => t.status === '00 - Cancelado').length;
 
+  // Novo indicador: demandas em aberto cuja data final de cronograma já passou
+  // (mesmo critério usado no Roadmap Macro).
+  const delayed = useMemo(() => {
+    const now = Date.now();
+    return baseFilteredTickets.filter(t => isTicketOverdue(t, now)).length;
+  }, [baseFilteredTickets]);
+
+  // Novo indicador: tempo médio (em dias) entre a criação e a conclusão das
+  // demandas já concluídas, a partir do histórico de status.
+  const avgCompletionDays = useMemo(() => {
+    const concluidas = baseFilteredTickets.filter(t => t.status === '10 - Concluído');
+    if (concluidas.length === 0) return null;
+    let sum = 0;
+    let counted = 0;
+    concluidas.forEach(t => {
+      const creationDate = t.statusHistory?.[0]?.date || t.logs?.[0]?.date;
+      const completedHist = t.statusHistory?.slice().reverse().find(h => h.status === '10 - Concluído');
+      const completedDate = completedHist?.date || t.logs?.[0]?.date;
+      if (!creationDate || !completedDate) return;
+      const start = new Date(creationDate + 'T00:00:00').getTime();
+      const end = new Date(completedDate + 'T00:00:00').getTime();
+      if (Number.isNaN(start) || Number.isNaN(end)) return;
+      sum += Math.max(0, Math.round((end - start) / 86400000));
+      counted += 1;
+    });
+    return counted > 0 ? Math.round(sum / counted) : null;
+  }, [baseFilteredTickets]);
+
   const chartTickets = useMemo(() => {
     let result = baseFilteredTickets;
 
@@ -1785,6 +1879,14 @@ function DashboardView({ tickets, onNavigateToList }) {
 
   const activeStatuses = [...new Set(chartTickets.map(t => t.status))].sort();
   const hasInteractiveFilters = activeFilter !== 'Todos' || analystFilter !== 'Todos' || keyUserFilter !== 'Todos' || sponsorFilter !== 'Todos';
+  const hasBaseFiltersActive = sprintFilter !== 'Todas' || !typeFilter.includes('Todos') || analystFilter !== 'Todos' || keyUserFilter !== 'Todos' || sponsorFilter !== 'Todos';
+  const clearBaseFilters = () => {
+    setSprintFilter('Todas');
+    setTypeFilter(['Todos']);
+    setAnalystFilter('Todos');
+    setKeyUserFilter('Todos');
+    setSponsorFilter('Todos');
+  };
 
   const statusCounts = {};
   chartTickets.forEach(t => { statusCounts[t.status] = (statusCounts[t.status] || 0) + 1; });
@@ -1864,12 +1966,28 @@ function DashboardView({ tickets, onNavigateToList }) {
     return null;
   };
 
-  const renderTopLabel = (props) => {
-    const { x, y, width, payload } = props;
-    if (!payload || payload.total === undefined) return null;
+  // Nota: o topo do gráfico precisa reservar espaço real para este rótulo
+  // (ver margin={{ top: STACKED_CHART_TOP_MARGIN }} nos BarCharts abaixo) —
+  // antes a margem era menor que o deslocamento do texto, então o total
+  // ficava cortado sempre que a barra chegava perto do topo do eixo Y.
+  //
+  // Segunda causa raiz encontrada ao testar de verdade (não só ler o
+  // código): no Recharts usado aqui (v3), a função de label ligada
+  // diretamente a um <Bar> recebe x/y/width/index/value — mas NUNCA recebe
+  // `payload` com a linha inteira. Como o total só existe no objeto da
+  // linha (analystData[i].total), a checagem antiga (`payload.total`) dava
+  // sempre `undefined` e a função retornava null pra TODAS as barras — ou
+  // seja, o rótulo de total nunca aparecia, não só nas barras mais altas.
+  // A correção usa `index` para buscar a linha certa no array de dados de
+  // origem (fica curried por gráfico, já que cada um tem seu próprio array).
+  const STACKED_CHART_TOP_MARGIN = 28;
+  const makeTopLabelRenderer = (dataArray) => (props) => {
+    const { x, y, width, index } = props;
+    const row = dataArray[index];
+    if (!row || row.total === undefined) return null;
     return (
-      <text x={x + width / 2} y={y - 6} fill="#475569" textAnchor="middle" fontSize={12} fontWeight="bold" className="pointer-events-none">
-        {payload.total}
+      <text x={x + width / 2} y={y - 8} fill="#475569" textAnchor="middle" fontSize={12} fontWeight="bold" className="pointer-events-none">
+        {row.total}
       </text>
     );
   };
@@ -1880,30 +1998,9 @@ function DashboardView({ tickets, onNavigateToList }) {
     let globalMax = 0;
 
     chartTickets.forEach(t => {
-      let tMin = Infinity;
-      let tMax = 0;
-      let hasDates = false;
-      const schedule = t.schedule || {};
-      const steps = t.customSteps && t.customSteps.length > 0 ? t.customSteps : SCHEDULE_STEPS;
-
-      steps.forEach(step => {
-        const phase = schedule[step];
-        if (phase) {
-          const pStart = phase.plannedStart ? new Date(phase.plannedStart + 'T00:00:00').getTime() : null;
-          const pEnd = phase.plannedEnd ? new Date(phase.plannedEnd + 'T00:00:00').getTime() : null;
-          const aStart = phase.actualStart ? new Date(phase.actualStart + 'T00:00:00').getTime() : null;
-          const aEnd = phase.actualEnd ? new Date(phase.actualEnd + 'T00:00:00').getTime() : null;
-
-          const start = aStart || pStart;
-          const end = aEnd || pEnd;
-
-          if (start) { tMin = Math.min(tMin, start); hasDates = true; }
-          if (end) { tMax = Math.max(tMax, end); hasDates = true; }
-        }
-      });
+      const { tMin, tMax, hasDates } = getTicketScheduleRange(t);
 
       if (hasDates) {
-        if (tMax < tMin) tMax = tMin + 86400000;
         data.push({ ticket: t, startMs: tMin, endMs: tMax, hasDates: true });
         globalMin = Math.min(globalMin, tMin);
         globalMax = Math.max(globalMax, tMax);
@@ -1948,91 +2045,113 @@ function DashboardView({ tickets, onNavigateToList }) {
     return m;
   }, [dashboardGanttData]);
 
+  // Rótulos de mês exibidos no cabeçalho do Roadmap Macro: todo mês recebe uma
+  // linha-guia vertical, mas só desenha o texto quando há espaço horizontal
+  // suficiente até o rótulo anterior — evita a sobreposição de textos (ex.:
+  // Agosto/Setembro) quando o período filtrado cobre muitos meses.
+  const MIN_MONTH_LABEL_GAP_PCT = 6;
+  const visibleMonthLabels = useMemo(() => {
+    const labels = [];
+    let lastLeft = -Infinity;
+    dashboardMonths.forEach(ms => {
+      const left = ((ms - dashboardGanttData.minMs) / dashboardGanttData.totalMs) * 100;
+      if (left < 0 || left > 100) return;
+      if (left - lastLeft < MIN_MONTH_LABEL_GAP_PCT) return;
+      lastLeft = left;
+      labels.push({ ms, left });
+    });
+    // Todo rótulo cresce para a direita (mesma direção), o que faz o gap
+    // mínimo acima já bastar para evitar sobreposição entre vizinhos. A
+    // única exceção é o último rótulo: se ele estiver perto do fim, ancora
+    // pela direita (cresce para a esquerda) só para não vazar para fora do
+    // card. Como esse último cresce em direção oposta ao penúltimo, os dois
+    // textos avançam um contra o outro — o gap mínimo comum não basta. Se
+    // estiverem próximos demais, descarta o penúltimo em vez do último.
+    while (labels.length >= 2) {
+      const lastItem = labels[labels.length - 1];
+      const prevItem = labels[labels.length - 2];
+      const lastWillFlip = lastItem.left > 85;
+      const gap = lastItem.left - prevItem.left;
+      if (lastWillFlip && gap < MIN_MONTH_LABEL_GAP_PCT * 2) {
+        labels.splice(labels.length - 2, 1);
+      } else {
+        break;
+      }
+    }
+
+    return labels.map((label, idx) => ({
+      ...label,
+      isNearEnd: idx === labels.length - 1 && label.left > 85,
+    }));
+  }, [dashboardMonths, dashboardGanttData]);
+
+  // Novo indicador: distribuição das demandas filtradas por sistema —
+  // dado já coletado em cada ticket (campo `sistema`) mas até agora só
+  // explorado no Roadmap e nas Estatísticas, nunca na página Principal.
+  const systemData = useMemo(() => {
+    const map = {};
+    chartTickets.forEach(t => {
+      const s = t.sistema || 'Não Definido';
+      map[s] = (map[s] || 0) + 1;
+    });
+    return Object.entries(map)
+      .map(([name, total]) => ({ name, total }))
+      .sort((a, b) => b.total - a.total);
+  }, [chartTickets]);
+
   return (
     <div className="space-y-6 max-w-7xl mx-auto">
       
-      <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 flex flex-col xl:flex-row gap-6 items-start xl:items-end justify-between">
-        <div className="flex flex-wrap items-end gap-5 w-full xl:w-auto">
-           <div className="w-full sm:w-auto min-w-[200px] relative z-20">
-             <MultiSelectFilter label="Tipo de Demanda" options={demandTypesList} selected={typeFilter} onChange={setTypeFilter} />
+      <div className="bg-white p-3.5 rounded-xl shadow-sm border border-slate-200 flex flex-col gap-3">
+        <div className="flex flex-wrap items-end gap-2.5">
+           <div className="flex items-center gap-1.5 text-slate-400 shrink-0 pr-0.5 pb-2">
+              <Filter size={14} />
+              <span className="text-[10px] font-bold uppercase tracking-wider">Filtros</span>
            </div>
 
-           <div className="w-full sm:w-auto min-w-[150px]">
-             <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">Sprint</label>
-             <select 
-               className="w-full border border-slate-300 rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-blue-500 text-sm bg-slate-50 cursor-pointer font-medium text-slate-700"
-               value={sprintFilter}
-               onChange={(e) => setSprintFilter(e.target.value)}
-             >
-               {sprints.map(s => <option key={s} value={s}>{s}</option>)}
-             </select>
+           <div className="w-[180px] shrink-0 relative z-20">
+             <MultiSelectFilter label="Tipo" options={demandTypesList} selected={typeFilter} onChange={setTypeFilter} />
            </div>
 
-           <div className="w-full sm:w-auto min-w-[150px]">
-             <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">Analista</label>
-             <select 
-               className="w-full border border-slate-300 rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-blue-500 text-sm bg-slate-50 cursor-pointer font-medium text-slate-700"
-               value={analystFilter}
-               onChange={(e) => setAnalystFilter(e.target.value)}
-             >
-               {analystsList.map(a => <option key={a} value={a}>{a}</option>)}
-             </select>
-           </div>
+           <FilterSelect label="Sprint" value={sprintFilter} onChange={setSprintFilter} options={sprints} />
+           <FilterSelect label="Analista" value={analystFilter} onChange={setAnalystFilter} options={analystsList} />
+           <FilterSelect label="Key User" value={keyUserFilter} onChange={setKeyUserFilter} options={keyUsersList} />
+           <FilterSelect label="Patrocinador" value={sponsorFilter} onChange={setSponsorFilter} options={sponsorsList} />
 
-           <div className="w-full sm:w-auto min-w-[150px]">
-             <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">Key User</label>
-             <select 
-               className="w-full border border-slate-300 rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-blue-500 text-sm bg-slate-50 cursor-pointer font-medium text-slate-700"
-               value={keyUserFilter}
-               onChange={(e) => setKeyUserFilter(e.target.value)}
-             >
-               {keyUsersList.map(k => <option key={k} value={k}>{k}</option>)}
-             </select>
-           </div>
-
-           <div className="w-full sm:w-auto min-w-[150px]">
-             <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">Patrocinador</label>
-             <select 
-               className="w-full border border-slate-300 rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-blue-500 text-sm bg-slate-50 cursor-pointer font-medium text-slate-700"
-               value={sponsorFilter}
-               onChange={(e) => setSponsorFilter(e.target.value)}
-             >
-               {sponsorsList.map(s => <option key={s} value={s}>{s}</option>)}
-             </select>
-           </div>
+           {hasBaseFiltersActive && (
+             <button onClick={clearBaseFilters} className="text-xs font-semibold text-slate-400 hover:text-slate-700 transition-colors ml-auto shrink-0 flex items-center gap-1">
+               <X size={13} /> Limpar filtros
+             </button>
+           )}
         </div>
 
         {hasInteractiveFilters && (
-          <div className="flex-1 w-full flex flex-col sm:flex-row justify-between sm:items-center gap-3 bg-blue-50 border border-blue-200 px-4 py-3 rounded-xl animate-in fade-in z-10">
-            <div className="flex flex-col gap-1.5">
-              <div className="flex items-center gap-2">
-                <Filter size={18} className="text-blue-600" />
-                <span className="text-sm font-semibold text-blue-800">Gráficos cruzados por:</span>
-              </div>
-              <div className="flex gap-2 flex-wrap">
-                 {activeFilter !== 'Todos' && <span className="text-xs bg-blue-200 text-blue-800 px-2.5 py-1 rounded-md font-bold flex items-center gap-1.5">Status: {activeFilter} <button onClick={()=>setActiveFilter('Todos')} className="hover:text-blue-900 bg-blue-300/50 rounded-full p-0.5"><X size={12}/></button></span>}
-                 {analystFilter !== 'Todos' && <span className="text-xs bg-purple-200 text-purple-800 px-2.5 py-1 rounded-md font-bold flex items-center gap-1.5">Analista: {analystFilter} <button onClick={()=>setAnalystFilter('Todos')} className="hover:text-purple-900 bg-purple-300/50 rounded-full p-0.5"><X size={12}/></button></span>}
-                 {keyUserFilter !== 'Todos' && <span className="text-xs bg-emerald-200 text-emerald-800 px-2.5 py-1 rounded-md font-bold flex items-center gap-1.5">Key User: {keyUserFilter} <button onClick={()=>setKeyUserFilter('Todos')} className="hover:text-emerald-900 bg-emerald-300/50 rounded-full p-0.5"><X size={12}/></button></span>}
-                 {sponsorFilter !== 'Todos' && <span className="text-xs bg-indigo-200 text-indigo-800 px-2.5 py-1 rounded-md font-bold flex items-center gap-1.5">Patrocinador: {sponsorFilter} <button onClick={()=>setSponsorFilter('Todos')} className="hover:text-indigo-900 bg-indigo-300/50 rounded-full p-0.5"><X size={12}/></button></span>}
-              </div>
-            </div>
-            <div className="flex gap-4 items-center shrink-0">
-               <button onClick={() => { setActiveFilter('Todos'); setAnalystFilter('Todos'); setKeyUserFilter('Todos'); setSponsorFilter('Todos'); }} className="text-sm font-bold text-slate-500 hover:text-slate-800 transition-colors">Limpar Cruzamentos</button>
-               <button onClick={() => onNavigateToList(activeFilter)} className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-blue-700 transition-colors shadow-sm">
-                 Ver as {chartTickets.length} demandas
-               </button>
-            </div>
+          <div className="flex flex-wrap items-center gap-2 pt-3 border-t border-slate-100 animate-in fade-in">
+             <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 shrink-0">Cruzamento ativo</span>
+             {activeFilter !== 'Todos' && <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-600 bg-slate-100 pl-2.5 pr-1 py-1 rounded-full"><span className="w-1.5 h-1.5 rounded-full bg-blue-500" />Status: {friendlyStatusLabel(activeFilter)}<button onClick={()=>setActiveFilter('Todos')} className="hover:text-slate-900 hover:bg-slate-200 rounded-full p-0.5 transition-colors"><X size={11}/></button></span>}
+             {analystFilter !== 'Todos' && <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-600 bg-slate-100 pl-2.5 pr-1 py-1 rounded-full"><span className="w-1.5 h-1.5 rounded-full bg-purple-500" />Analista: {analystFilter}<button onClick={()=>setAnalystFilter('Todos')} className="hover:text-slate-900 hover:bg-slate-200 rounded-full p-0.5 transition-colors"><X size={11}/></button></span>}
+             {keyUserFilter !== 'Todos' && <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-600 bg-slate-100 pl-2.5 pr-1 py-1 rounded-full"><span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />Key User: {keyUserFilter}<button onClick={()=>setKeyUserFilter('Todos')} className="hover:text-slate-900 hover:bg-slate-200 rounded-full p-0.5 transition-colors"><X size={11}/></button></span>}
+             {sponsorFilter !== 'Todos' && <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-600 bg-slate-100 pl-2.5 pr-1 py-1 rounded-full"><span className="w-1.5 h-1.5 rounded-full bg-indigo-500" />Patrocinador: {sponsorFilter}<button onClick={()=>setSponsorFilter('Todos')} className="hover:text-slate-900 hover:bg-slate-200 rounded-full p-0.5 transition-colors"><X size={11}/></button></span>}
+
+             <div className="flex items-center gap-3 ml-auto shrink-0">
+                <button onClick={() => { setActiveFilter('Todos'); setAnalystFilter('Todos'); setKeyUserFilter('Todos'); setSponsorFilter('Todos'); }} className="text-xs font-bold text-slate-400 hover:text-slate-700 transition-colors">Limpar cruzamentos</button>
+                <button onClick={() => onNavigateToList(activeFilter)} className="bg-blue-600 text-white px-3.5 py-1.5 rounded-lg text-xs font-semibold hover:bg-blue-700 transition-colors shadow-sm">
+                  Ver as {chartTickets.length} demandas
+                </button>
+             </div>
           </div>
         )}
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <StatCard title="Total Demandas" value={total} icon={<ListTodo size={24} />} color="bg-blue-500" onClick={() => handleFilterToggle('Todos')} isSelected={activeFilter === 'Todos'} />
         <StatCard title="Concluídas" value={completed} icon={<CheckCircle2 size={24} />} color="bg-emerald-500" onClick={() => handleFilterToggle('10 - Concluído')} isSelected={activeFilter === '10 - Concluído'} />
         <StatCard title="Em Andamento" value={inProgress} icon={<Activity size={24} />} color="bg-amber-500" onClick={() => handleFilterToggle('Em Andamento')} isSelected={activeFilter === 'Em Andamento'} />
+        <StatCard title="Atrasadas" value={delayed} icon={<Clock size={24} />} color="bg-rose-600" interactive={false} hint="Prazo final do cronograma já passou" />
         <StatCard title="Paralisadas" value={paralisadas} icon={<AlertCircle size={24} />} color="bg-orange-500" onClick={() => handleFilterToggle('00 - Paralisado')} isSelected={activeFilter === '00 - Paralisado'} />
         <StatCard title="Bloqueadas" value={bloqueadas} icon={<AlertTriangle size={24} />} color="bg-red-500" onClick={() => handleFilterToggle('00 - Bloqueado')} isSelected={activeFilter === '00 - Bloqueado'} />
         <StatCard title="Canceladas" value={canceladas} icon={<XCircle size={24} />} color="bg-slate-500" onClick={() => handleFilterToggle('00 - Cancelado')} isSelected={activeFilter === '00 - Cancelado'} />
+        <StatCard title="Tempo Médio de Conclusão" value={avgCompletionDays !== null ? `${avgCompletionDays}d` : '—'} icon={<CalendarDays size={24} />} color="bg-cyan-600" interactive={false} hint="Da criação até concluído" />
       </div>
 
       <div className="flex flex-col gap-8">
@@ -2053,16 +2172,21 @@ function DashboardView({ tickets, onNavigateToList }) {
                           <span className="font-black text-[10px] text-slate-500 uppercase tracking-wider">Demanda</span>
                        </div>
                        <div className="flex-1 relative h-8 bg-slate-50/50">
+                          {/* Linhas-guia: uma por mês, sempre desenhadas — só o texto do rótulo é que
+                              seleciona quais meses cabem sem se sobrepor (ver visibleMonthLabels). */}
                           {dashboardMonths.map(ms => {
                              const left = ((ms - dashboardGanttData.minMs) / dashboardGanttData.totalMs) * 100;
                              if (left < 0 || left > 100) return null;
-                             const isNearEnd = left > 85;
+                             return <div key={ms} className="absolute top-0 bottom-0 border-l border-slate-300" style={{ left: `${left}%` }} />;
+                          })}
+                          {visibleMonthLabels.map(({ ms, left, isNearEnd }) => {
+                             const position = isNearEnd
+                               ? { right: `calc(${100 - left}% + 6px)` }
+                               : { left: `calc(${left}% + 6px)` };
                              return (
-                               <div key={ms} className="absolute top-0 bottom-0 border-l border-slate-300" style={{ left: `${left}%` }}>
-                                 <span className={`absolute top-2 ${isNearEnd ? 'right-1.5' : 'left-1.5'} text-[9px] font-bold text-slate-500 uppercase tracking-wider whitespace-nowrap`}>
-                                   {formatShortMonthYear(ms)}
-                                 </span>
-                               </div>
+                               <span key={ms} className="absolute top-2 text-[9px] font-bold text-slate-500 uppercase tracking-wider whitespace-nowrap" style={position}>
+                                 {formatShortMonthYear(ms)}
+                               </span>
                              );
                           })}
                        </div>
@@ -2140,17 +2264,45 @@ function DashboardView({ tickets, onNavigateToList }) {
           ) : <p className="text-center text-slate-400 mt-20">Sem dados para este filtro.</p>}
         </ChartCard>
         
+        <ChartCard title="Demandas por Sistema" className="w-full border-l-4 border-l-violet-500">
+          {systemData.length > 0 ? (
+            <ResponsiveContainer width="100%" height={Math.max(320, systemData.length * 34)}>
+              <BarChart data={systemData} layout="vertical" margin={{ top: 5, right: 40, left: 10, bottom: 5 }}>
+                <CartesianGrid strokeDasharray="3 3" horizontal={false} />
+                <XAxis type="number" allowDecimals={false} tick={{ fontSize: 11, fill: '#475569' }} />
+                <YAxis type="category" dataKey="name" width={160} tick={{ fontSize: 11, fill: '#475569' }} />
+                <RechartsTooltip cursor={{ fill: '#f1f5f9' }} contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} />
+                <Bar dataKey="total" fill="#7C3AED" radius={[0, 4, 4, 0]} barSize={18} label={{ position: 'right', fill: '#475569', fontSize: 12, fontWeight: 'bold' }} />
+              </BarChart>
+            </ResponsiveContainer>
+          ) : <p className="text-center text-slate-400 mt-20">Sem dados para este filtro.</p>}
+        </ChartCard>
+
+        {/* As três distribuições abaixo (Analista / Key User / Patrocinador) usam a
+            mesma paleta de status — uma única legenda compartilhada evita repetir os
+            13 rótulos de status três vezes seguidas na mesma tela. */}
+        {activeStatuses.length > 0 && (
+          <div className="flex flex-wrap gap-x-4 gap-y-2 items-center bg-slate-50 border border-slate-200 rounded-xl px-4 py-3">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 shrink-0">Legenda dos status</span>
+            {activeStatuses.map(status => (
+              <span key={status} className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-600">
+                <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ backgroundColor: STATUS_COLORS[status] || '#CBD5E1' }} />
+                {friendlyStatusLabel(status)}
+              </span>
+            ))}
+          </div>
+        )}
+
         <ChartCard title="Carga por Analista (Clique nas barras)" className="w-full">
           {chartTickets.length > 0 ? (
             <ResponsiveContainer width="100%" height={600}>
-              <BarChart data={analystData} margin={{ top: 5, right: 30, left: 20, bottom: 80 }}>
+              <BarChart data={analystData} margin={{ top: STACKED_CHART_TOP_MARGIN, right: 30, left: 20, bottom: 80 }}>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} />
                 <XAxis dataKey="name" tick={{fontSize: 11, fill: '#475569'}} angle={-45} textAnchor="end" />
                 <YAxis />
                 <RechartsTooltip cursor={{fill: '#f1f5f9'}} contentStyle={{borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)'}} />
-                <Legend verticalAlign="top" wrapperStyle={{ fontSize: '11px', paddingBottom: '20px' }} />
                 {activeStatuses.map((status, index) => (
-                   <Bar key={status} dataKey={status} stackId="a" fill={STATUS_COLORS[status] || '#CBD5E1'} cursor="pointer" onClick={handleAnalystToggle} className="hover:opacity-80 transition-opacity" label={index === activeStatuses.length - 1 ? renderTopLabel : null} />
+                   <Bar key={status} dataKey={status} stackId="a" fill={STATUS_COLORS[status] || '#CBD5E1'} cursor="pointer" onClick={handleAnalystToggle} className="hover:opacity-80 transition-opacity" label={index === activeStatuses.length - 1 ? makeTopLabelRenderer(analystData) : null} />
                 ))}
               </BarChart>
             </ResponsiveContainer>
@@ -2160,14 +2312,13 @@ function DashboardView({ tickets, onNavigateToList }) {
         <ChartCard title="Total por Key User (Clique nas barras)" className="w-full">
           {chartTickets.length > 0 ? (
             <ResponsiveContainer width="100%" height={600}>
-              <BarChart data={keyUserData} margin={{ top: 5, right: 30, left: 20, bottom: 80 }}>
+              <BarChart data={keyUserData} margin={{ top: STACKED_CHART_TOP_MARGIN, right: 30, left: 20, bottom: 80 }}>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} />
                 <XAxis dataKey="name" tick={{fontSize: 11, fill: '#475569'}} angle={-45} textAnchor="end" />
                 <YAxis />
                 <RechartsTooltip cursor={{fill: '#f1f5f9'}} contentStyle={{borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)'}} />
-                <Legend verticalAlign="top" wrapperStyle={{ fontSize: '11px', paddingBottom: '20px' }} />
                 {activeStatuses.map((status, index) => (
-                   <Bar key={status} dataKey={status} stackId="a" fill={STATUS_COLORS[status] || '#CBD5E1'} cursor="pointer" onClick={handleKeyUserToggle} className="hover:opacity-80 transition-opacity" label={index === activeStatuses.length - 1 ? renderTopLabel : null} />
+                   <Bar key={status} dataKey={status} stackId="a" fill={STATUS_COLORS[status] || '#CBD5E1'} cursor="pointer" onClick={handleKeyUserToggle} className="hover:opacity-80 transition-opacity" label={index === activeStatuses.length - 1 ? makeTopLabelRenderer(keyUserData) : null} />
                 ))}
               </BarChart>
             </ResponsiveContainer>
@@ -2177,14 +2328,13 @@ function DashboardView({ tickets, onNavigateToList }) {
         <ChartCard title="Total por Patrocinador (Clique nas barras)" className="w-full">
           {chartTickets.length > 0 ? (
             <ResponsiveContainer width="100%" height={600}>
-              <BarChart data={sponsorData} margin={{ top: 5, right: 30, left: 20, bottom: 80 }}>
+              <BarChart data={sponsorData} margin={{ top: STACKED_CHART_TOP_MARGIN, right: 30, left: 20, bottom: 80 }}>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} />
                 <XAxis dataKey="name" tick={{fontSize: 11, fill: '#475569'}} angle={-45} textAnchor="end" />
                 <YAxis />
                 <RechartsTooltip cursor={{fill: '#f1f5f9'}} contentStyle={{borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)'}} />
-                <Legend verticalAlign="top" wrapperStyle={{ fontSize: '11px', paddingBottom: '20px' }} />
                 {activeStatuses.map((status, index) => (
-                   <Bar key={status} dataKey={status} stackId="a" fill={STATUS_COLORS[status] || '#CBD5E1'} cursor="pointer" onClick={handleSponsorToggle} className="hover:opacity-80 transition-opacity" label={index === activeStatuses.length - 1 ? renderTopLabel : null} />
+                   <Bar key={status} dataKey={status} stackId="a" fill={STATUS_COLORS[status] || '#CBD5E1'} cursor="pointer" onClick={handleSponsorToggle} className="hover:opacity-80 transition-opacity" label={index === activeStatuses.length - 1 ? makeTopLabelRenderer(sponsorData) : null} />
                 ))}
               </BarChart>
             </ResponsiveContainer>
