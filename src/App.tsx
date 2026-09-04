@@ -1022,7 +1022,7 @@ export default function App() {
             {!sidebarCollapsed && (
               <div className="flex items-center justify-between mt-6">
                 <p className="text-[10px] text-slate-400 flex items-center gap-1"><Sparkles size={12} className="text-yellow-400"/> AI Powered</p>
-                <span className="text-[10px] font-mono text-slate-500 bg-slate-800/50 px-2 py-0.5 rounded-full border border-slate-700/50 cursor-default" title="Versão 0.2.3 (Múltiplos Perfis)">v0.2.3</span>
+                <span className="text-[10px] font-mono text-slate-500 bg-slate-800/50 px-2 py-0.5 rounded-full border border-slate-700/50 cursor-default" title="Versão 3.0.0">v3.0.0</span>
               </div>
             )}
           </div>
@@ -1419,71 +1419,86 @@ function RoadmapView({ tickets, sponsors, systems, onSelect }) {
     };
   }, [filteredTickets]);
 
-  const months = useMemo(() => {
-    const m = [];
-    if (ganttData.minMs !== Infinity) {
-      let d = new Date(ganttData.minMs);
-      d.setDate(1);
-      while (d.getTime() <= ganttData.maxMs) {
-        m.push(d.getTime());
-        d.setMonth(d.getMonth() + 1);
-      }
+  // Mesma técnica do Roadmap Macro (página Principal): coluna de largura fixa
+  // por semana em vez de posicionar tudo por porcentagem num container de
+  // largura fixa — evita ter que esconder meses inteiros quando o período é
+  // longo, e o card ganha rolagem horizontal de verdade para o resto.
+  const WEEK_COL_PX = 52;
+  const ganttTimeline = useMemo(() => {
+    if (ganttData.items.length === 0) {
+      return { weeks: [], monthGroups: [], totalWidth: 0, startMs: ganttData.minMs };
     }
-    return m;
+
+    const alignToMonday = (ms) => {
+      const d = new Date(ms);
+      d.setHours(0, 0, 0, 0);
+      const day = d.getDay();
+      const diff = (day === 0 ? -6 : 1) - day;
+      d.setDate(d.getDate() + diff);
+      return d.getTime();
+    };
+
+    const startMs = alignToMonday(ganttData.minMs);
+    const weeks = [];
+    let cursor = startMs;
+    while (cursor <= ganttData.maxMs) {
+      weeks.push(cursor);
+      cursor += 7 * 86400000;
+    }
+
+    const monthGroups = [];
+    weeks.forEach(ms => {
+      const d = new Date(ms);
+      const key = `${d.getFullYear()}-${d.getMonth()}`;
+      const lastGroup = monthGroups[monthGroups.length - 1];
+      if (lastGroup && lastGroup.key === key) {
+        lastGroup.weekCount += 1;
+      } else {
+        monthGroups.push({ key, label: formatShortMonthYear(ms), weekCount: 1 });
+      }
+    });
+
+    return { weeks, monthGroups, totalWidth: weeks.length * WEEK_COL_PX, startMs };
   }, [ganttData]);
+
+  const ganttMsToPx = (ms) => ((ms - ganttTimeline.startMs) / (7 * 86400000)) * WEEK_COL_PX;
+
+  const hasRoadmapFiltersActive = filterSprint !== 'Todas' || filterSistema !== 'Todos' || filterSponsor !== 'Todos'
+    || filterKeyUser !== 'Todos' || filterAnalyst !== 'Todos' || filterRecurso !== 'Todos' || filterCronograma !== 'Todos';
+  const clearRoadmapFilters = () => {
+    setFilterSprint('Todas');
+    setFilterSistema('Todos');
+    setFilterSponsor('Todos');
+    setFilterKeyUser('Todos');
+    setFilterAnalyst('Todos');
+    setFilterRecurso('Todos');
+    setFilterCronograma('Todos');
+  };
 
   return (
     <div className="flex flex-col h-full space-y-4 animate-in fade-in">
-      <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 flex flex-wrap gap-4 items-center shrink-0">
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-semibold text-slate-500">Sprint:</span>
-          <select className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-white" value={filterSprint} onChange={(e) => setFilterSprint(e.target.value)}>
-            {sprints.map(s => <option key={s} value={s}>{s}</option>)}
-          </select>
+      <div className="bg-white p-3.5 rounded-xl shadow-sm border border-slate-200 flex flex-wrap items-end gap-2.5 shrink-0">
+        <div className="flex items-center gap-1.5 text-slate-400 shrink-0 pr-0.5 pb-2">
+           <Filter size={14} />
+           <span className="text-[10px] font-bold uppercase tracking-wider">Filtros</span>
         </div>
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-semibold text-slate-500">Sistema:</span>
-          <select className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-white" value={filterSistema} onChange={(e) => setFilterSistema(e.target.value)}>
-             <option value="Todos">Todos</option>
-             <option value="Não Definido">Não Definido</option>
-             {sistemasList.filter(s => s !== 'Todos').map(s => <option key={s} value={s}>{s}</option>)}
-          </select>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-semibold text-slate-500">Patrocinador:</span>
-          <select className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-white" value={filterSponsor} onChange={(e) => setFilterSponsor(e.target.value)}>
-            {sponsorsList.map(s => <option key={s} value={s}>{s}</option>)}
-          </select>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-semibold text-slate-500">Key User:</span>
-          <select className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-white" value={filterKeyUser} onChange={(e) => setFilterKeyUser(e.target.value)}>
-            {keyUsers.map(k => <option key={k} value={k}>{k}</option>)}
-          </select>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-semibold text-slate-500">Analista:</span>
-          <select className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-white" value={filterAnalyst} onChange={(e) => setFilterAnalyst(e.target.value)}>
-            {analysts.map(a => <option key={a} value={a}>{a}</option>)}
-          </select>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-semibold text-slate-500">Recurso:</span>
-          <select className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-white" value={filterRecurso} onChange={(e) => setFilterRecurso(e.target.value)}>
-            {recursosList.map(r => <option key={r} value={r}>{r}</option>)}
-          </select>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-semibold text-slate-500">Cronograma:</span>
-          <select className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-white" value={filterCronograma} onChange={(e) => setFilterCronograma(e.target.value)}>
-            <option value="Todos">Todos</option>
-            <option value="Com Cronograma">Com Cronograma</option>
-            <option value="Sem Cronograma">Sem Cronograma</option>
-          </select>
-        </div>
-        
-        <div className="ml-auto flex items-center gap-3">
-          <span className="text-xs bg-blue-50 border border-blue-200 text-blue-700 px-3 py-1.5 rounded-lg font-bold">
+
+        <FilterSelect label="Sprint" value={filterSprint} onChange={setFilterSprint} options={sprints} />
+        <FilterSelect label="Sistema" value={filterSistema} onChange={setFilterSistema} options={['Todos', 'Não Definido', ...sistemasList.filter(s => s !== 'Todos')]} />
+        <FilterSelect label="Patrocinador" value={filterSponsor} onChange={setFilterSponsor} options={sponsorsList} />
+        <FilterSelect label="Key User" value={filterKeyUser} onChange={setFilterKeyUser} options={keyUsers} />
+        <FilterSelect label="Analista" value={filterAnalyst} onChange={setFilterAnalyst} options={analysts} />
+        <FilterSelect label="Recurso" value={filterRecurso} onChange={setFilterRecurso} options={recursosList} />
+        <FilterSelect label="Cronograma" value={filterCronograma} onChange={setFilterCronograma} options={['Todos', 'Com Cronograma', 'Sem Cronograma']} />
+
+        {hasRoadmapFiltersActive && (
+          <button onClick={clearRoadmapFilters} className="text-xs font-semibold text-slate-400 hover:text-slate-700 transition-colors shrink-0 flex items-center gap-1">
+            <X size={13} /> Limpar filtros
+          </button>
+        )}
+
+        <div className="ml-auto flex items-center gap-3 pb-0.5">
+          <span className="text-xs bg-blue-50 border border-blue-200 text-blue-700 px-3 py-1.5 rounded-lg font-bold whitespace-nowrap">
             {ganttData.items.length} demandas projetadas
           </span>
         </div>
@@ -1497,25 +1512,27 @@ function RoadmapView({ tickets, sponsors, systems, onSelect }) {
           </div>
         ) : (
           <div className="flex-1 overflow-auto relative custom-scrollbar">
-             <div className="min-w-[1200px] w-full pb-8">
-                {/* Header do Gráfico (Sticky Top) */}
+             <div className="pb-8" style={{ width: 350 + ganttTimeline.totalWidth }}>
+                {/* Header do Gráfico (Sticky Top): linha de mês + linha de semana */}
                 <div className="flex border-b border-slate-200 bg-slate-50 sticky top-0 z-30 shadow-sm">
                    <div className="w-[350px] shrink-0 sticky left-0 bg-slate-50 border-r border-slate-200 z-40 p-4 flex flex-col justify-center shadow-[2px_0_5px_rgba(0,0,0,0.03)]">
                       <span className="font-black text-xs text-slate-600 uppercase tracking-wider">Demanda / Projeto Em Aberto</span>
                    </div>
-                   <div className="flex-1 relative h-12 bg-slate-50/80">
-                      {months.map(ms => {
-                         const left = ((ms - ganttData.minMs) / ganttData.totalMs) * 100;
-                         if (left < 0 || left > 100) return null;
-                         const isNearEnd = left > 85;
-                         return (
-                           <div key={ms} className="absolute top-0 bottom-0 border-l border-slate-300" style={{ left: `${left}%` }}>
-                             <span className={`absolute top-3 ${isNearEnd ? 'right-2' : 'left-2'} text-[10px] font-black text-slate-500 uppercase tracking-wider bg-slate-50/80 px-1 rounded backdrop-blur-sm whitespace-nowrap`}>
-                               {formatShortMonthYear(ms)}
-                             </span>
+                   <div className="shrink-0 flex flex-col bg-slate-50/80" style={{ width: ganttTimeline.totalWidth }}>
+                      <div className="flex h-6 border-b border-slate-200">
+                         {ganttTimeline.monthGroups.map(g => (
+                           <div key={g.key} className="shrink-0 flex items-center pl-2 border-l border-slate-300 text-[10px] font-black text-slate-600 uppercase tracking-wider overflow-hidden" style={{ width: g.weekCount * WEEK_COL_PX }}>
+                             {g.label}
                            </div>
-                         );
-                      })}
+                         ))}
+                      </div>
+                      <div className="flex h-6">
+                         {ganttTimeline.weeks.map(ms => (
+                           <div key={ms} className="shrink-0 flex items-center justify-center border-l border-slate-200/70 text-[10px] font-medium text-slate-400" style={{ width: WEEK_COL_PX }}>
+                             {formatDateShort(ms)}
+                           </div>
+                         ))}
+                      </div>
                    </div>
                 </div>
 
@@ -1525,15 +1542,15 @@ function RoadmapView({ tickets, sponsors, systems, onSelect }) {
                       let left = 0;
                       let width = 0;
                       if (item.hasDates) {
-                        left = ((item.startMs - ganttData.minMs) / ganttData.totalMs) * 100;
-                        width = ((item.endMs - item.startMs) / ganttData.totalMs) * 100;
+                        left = ganttMsToPx(item.startMs);
+                        width = ganttMsToPx(item.endMs) - ganttMsToPx(item.startMs);
                       }
-                      
+
                       return (
                         <div key={item.ticket.id} className={`flex border-b border-slate-100 group ${item.isDelayed ? 'hover:bg-red-50/20' : 'hover:bg-blue-50/30'}`}>
                            {/* Painel de Informação (Sticky Left) */}
-                           <div 
-                             className={`w-[350px] shrink-0 sticky left-0 z-20 p-3 cursor-pointer shadow-[2px_0_5px_rgba(0,0,0,0.02)] transition-colors overflow-hidden border-r border-slate-200 ${item.isDelayed ? 'bg-red-50/30 group-hover:bg-red-50/60 border-l-4 border-l-red-500' : 'bg-white group-hover:bg-blue-50/30'}`} 
+                           <div
+                             className={`w-[350px] shrink-0 sticky left-0 z-20 p-3 cursor-pointer shadow-[2px_0_5px_rgba(0,0,0,0.02)] transition-colors overflow-hidden border-r border-slate-200 ${item.isDelayed ? 'bg-red-50/30 group-hover:bg-red-50/60 border-l-4 border-l-red-500' : 'bg-white group-hover:bg-blue-50/30'}`}
                              onClick={() => onSelect(item.ticket)}
                            >
                               <div className="flex items-center justify-between mb-1 gap-2">
@@ -1564,23 +1581,28 @@ function RoadmapView({ tickets, sponsors, systems, onSelect }) {
                            </div>
 
                            {/* Área do Gantt */}
-                           <div className="flex-1 relative py-2 min-h-[70px]">
-                              {/* Linhas de Grade Verticais (Meses) */}
-                              {months.map(ms => {
-                                 const mLeft = ((ms - ganttData.minMs) / ganttData.totalMs) * 100;
-                                 if (mLeft < 0 || mLeft > 100) return null;
-                                 return <div key={`grid-${ms}`} className="absolute top-0 bottom-0 border-l border-slate-200/50 pointer-events-none" style={{ left: `${mLeft}%` }}></div>;
+                           <div className="shrink-0 relative py-2 min-h-[70px]" style={{ width: ganttTimeline.totalWidth }}>
+                              {/* Linhas de Grade Verticais (uma por semana, mais forte no início do mês) */}
+                              {ganttTimeline.weeks.map(ms => {
+                                 const isMonthStart = new Date(ms).getDate() <= 7;
+                                 return (
+                                   <div
+                                     key={`grid-${ms}`}
+                                     className={`absolute top-0 bottom-0 pointer-events-none ${isMonthStart ? 'border-l border-slate-300/70' : 'border-l border-slate-200/50'}`}
+                                     style={{ left: ganttMsToPx(ms) }}
+                                   />
+                                 );
                               })}
-                              
+
                               {/* Barra de Progresso do Gantt */}
                               {item.hasDates ? (
                                 <>
-                                  <div 
-                                    className="absolute top-1/2 -translate-y-1/2 h-8 rounded-md shadow-sm border border-black/10 overflow-hidden cursor-pointer hover:ring-2 hover:ring-blue-400 hover:scale-[1.01] transition-all z-10" 
-                                    style={{ 
-                                      left: `calc(${left}% + 1px)`, 
-                                      width: `calc(${width}% - 2px)`, 
-                                      backgroundColor: STATUS_COLORS[item.ticket.status] || '#cbd5e1' 
+                                  <div
+                                    className="absolute top-1/2 -translate-y-1/2 h-8 rounded-md shadow-sm border border-black/10 overflow-hidden cursor-pointer hover:ring-2 hover:ring-blue-400 hover:scale-[1.01] transition-all z-10"
+                                    style={{
+                                      left: left + 1,
+                                      width: Math.max(width - 2, 2),
+                                      backgroundColor: STATUS_COLORS[item.ticket.status] || '#cbd5e1'
                                     }}
                                     onClick={() => onSelect(item.ticket)}
                                     title={`${item.ticket.id} | ${new Date(item.startMs).toLocaleDateString('pt-BR')} até ${new Date(item.endMs).toLocaleDateString('pt-BR')}`}
@@ -1590,7 +1612,7 @@ function RoadmapView({ tickets, sponsors, systems, onSelect }) {
                                        <div className="absolute top-0 right-0 bottom-0 w-1 bg-white/30"></div>
                                     </div>
                                   </div>
-                                  <div className="absolute top-1/2 -translate-y-1/2 flex items-center gap-1.5 pointer-events-none z-20 whitespace-nowrap" style={{ left: `calc(${left + width}% + 8px)` }}>
+                                  <div className="absolute top-1/2 -translate-y-1/2 flex items-center gap-1.5 pointer-events-none z-20 whitespace-nowrap" style={{ left: left + width + 8 }}>
                                     <span className="text-[11px] font-black text-slate-700">{item.ticket.progress}%</span>
                                     <span className="text-[10px] font-bold text-slate-500 flex items-center gap-1">
                                       <span className="w-1 h-1 rounded-full bg-slate-400"></span>
