@@ -2032,58 +2032,55 @@ function DashboardView({ tickets, onNavigateToList }) {
     };
   }, [chartTickets]);
 
-  const dashboardMonths = useMemo(() => {
-    const m = [];
-    if (dashboardGanttData.items.length > 0) {
-      let d = new Date(dashboardGanttData.minMs);
-      d.setDate(1);
-      while (d.getTime() <= dashboardGanttData.maxMs) {
-        m.push(d.getTime());
-        d.setMonth(d.getMonth() + 1);
-      }
+  // Cabeçalho do Roadmap Macro: em vez de espremer os rótulos de mês num
+  // container de largura fixa (o que forçava a esconder meses inteiros
+  // quando o período era longo — ex.: Agosto/Setembro sobrepostos, ou meses
+  // inteiros pulados), a linha do tempo agora usa uma coluna de largura fixa
+  // por semana e cresce para a largura real que precisa; o card ganha
+  // rolagem horizontal para o resto. O cabeçalho tem duas linhas: mês (uma
+  // célula por mês, mesclando as semanas que ele contém) e semana (data de
+  // início de cada semana).
+  const WEEK_COL_PX = 52;
+  const roadmapTimeline = useMemo(() => {
+    if (dashboardGanttData.items.length === 0) {
+      return { weeks: [], monthGroups: [], totalWidth: 0, startMs: dashboardGanttData.minMs };
     }
-    return m;
+
+    // Alinha o início da grade à segunda-feira anterior (ou igual) ao início
+    // do período, para que as colunas de semana sigam um padrão previsível.
+    const alignToMonday = (ms) => {
+      const d = new Date(ms);
+      d.setHours(0, 0, 0, 0);
+      const day = d.getDay(); // 0=Dom .. 6=Sáb
+      const diff = (day === 0 ? -6 : 1) - day;
+      d.setDate(d.getDate() + diff);
+      return d.getTime();
+    };
+
+    const startMs = alignToMonday(dashboardGanttData.minMs);
+    const weeks = [];
+    let cursor = startMs;
+    while (cursor <= dashboardGanttData.maxMs) {
+      weeks.push(cursor);
+      cursor += 7 * 86400000;
+    }
+
+    const monthGroups = [];
+    weeks.forEach(ms => {
+      const d = new Date(ms);
+      const key = `${d.getFullYear()}-${d.getMonth()}`;
+      const lastGroup = monthGroups[monthGroups.length - 1];
+      if (lastGroup && lastGroup.key === key) {
+        lastGroup.weekCount += 1;
+      } else {
+        monthGroups.push({ key, label: formatShortMonthYear(ms), weekCount: 1 });
+      }
+    });
+
+    return { weeks, monthGroups, totalWidth: weeks.length * WEEK_COL_PX, startMs };
   }, [dashboardGanttData]);
 
-  // Rótulos de mês exibidos no cabeçalho do Roadmap Macro: todo mês recebe uma
-  // linha-guia vertical, mas só desenha o texto quando há espaço horizontal
-  // suficiente até o rótulo anterior — evita a sobreposição de textos (ex.:
-  // Agosto/Setembro) quando o período filtrado cobre muitos meses.
-  const MIN_MONTH_LABEL_GAP_PCT = 6;
-  const visibleMonthLabels = useMemo(() => {
-    const labels = [];
-    let lastLeft = -Infinity;
-    dashboardMonths.forEach(ms => {
-      const left = ((ms - dashboardGanttData.minMs) / dashboardGanttData.totalMs) * 100;
-      if (left < 0 || left > 100) return;
-      if (left - lastLeft < MIN_MONTH_LABEL_GAP_PCT) return;
-      lastLeft = left;
-      labels.push({ ms, left });
-    });
-    // Todo rótulo cresce para a direita (mesma direção), o que faz o gap
-    // mínimo acima já bastar para evitar sobreposição entre vizinhos. A
-    // única exceção é o último rótulo: se ele estiver perto do fim, ancora
-    // pela direita (cresce para a esquerda) só para não vazar para fora do
-    // card. Como esse último cresce em direção oposta ao penúltimo, os dois
-    // textos avançam um contra o outro — o gap mínimo comum não basta. Se
-    // estiverem próximos demais, descarta o penúltimo em vez do último.
-    while (labels.length >= 2) {
-      const lastItem = labels[labels.length - 1];
-      const prevItem = labels[labels.length - 2];
-      const lastWillFlip = lastItem.left > 85;
-      const gap = lastItem.left - prevItem.left;
-      if (lastWillFlip && gap < MIN_MONTH_LABEL_GAP_PCT * 2) {
-        labels.splice(labels.length - 2, 1);
-      } else {
-        break;
-      }
-    }
-
-    return labels.map((label, idx) => ({
-      ...label,
-      isNearEnd: idx === labels.length - 1 && label.left > 85,
-    }));
-  }, [dashboardMonths, dashboardGanttData]);
+  const msToPx = (ms) => ((ms - roadmapTimeline.startMs) / (7 * 86400000)) * WEEK_COL_PX;
 
   // Novo indicador: distribuição das demandas filtradas por sistema —
   // dado já coletado em cada ticket (campo `sistema`) mas até agora só
@@ -2165,30 +2162,27 @@ function DashboardView({ tickets, onNavigateToList }) {
               </div>
             ) : (
               <div className="flex-1 overflow-auto relative custom-scrollbar">
-                 <div className="min-w-[900px] w-full pb-4">
-                    {/* Header */}
+                 <div className="pb-4" style={{ width: 280 + roadmapTimeline.totalWidth }}>
+                    {/* Header: linha de mês (uma célula por mês) + linha de semana (início de cada semana) */}
                     <div className="flex border-b border-slate-200 bg-white sticky top-0 z-30 shadow-sm">
                        <div className="w-[280px] shrink-0 sticky left-0 bg-white border-r border-slate-200 z-40 p-3 flex flex-col justify-center">
                           <span className="font-black text-[10px] text-slate-500 uppercase tracking-wider">Demanda</span>
                        </div>
-                       <div className="flex-1 relative h-8 bg-slate-50/50">
-                          {/* Linhas-guia: uma por mês, sempre desenhadas — só o texto do rótulo é que
-                              seleciona quais meses cabem sem se sobrepor (ver visibleMonthLabels). */}
-                          {dashboardMonths.map(ms => {
-                             const left = ((ms - dashboardGanttData.minMs) / dashboardGanttData.totalMs) * 100;
-                             if (left < 0 || left > 100) return null;
-                             return <div key={ms} className="absolute top-0 bottom-0 border-l border-slate-300" style={{ left: `${left}%` }} />;
-                          })}
-                          {visibleMonthLabels.map(({ ms, left, isNearEnd }) => {
-                             const position = isNearEnd
-                               ? { right: `calc(${100 - left}% + 6px)` }
-                               : { left: `calc(${left}% + 6px)` };
-                             return (
-                               <span key={ms} className="absolute top-2 text-[9px] font-bold text-slate-500 uppercase tracking-wider whitespace-nowrap" style={position}>
-                                 {formatShortMonthYear(ms)}
-                               </span>
-                             );
-                          })}
+                       <div className="shrink-0 flex flex-col bg-slate-50/50" style={{ width: roadmapTimeline.totalWidth }}>
+                          <div className="flex h-5 border-b border-slate-200">
+                             {roadmapTimeline.monthGroups.map(g => (
+                               <div key={g.key} className="shrink-0 flex items-center pl-1.5 border-l border-slate-300 text-[9px] font-black text-slate-600 uppercase tracking-wider overflow-hidden" style={{ width: g.weekCount * WEEK_COL_PX }}>
+                                 {g.label}
+                               </div>
+                             ))}
+                          </div>
+                          <div className="flex h-5">
+                             {roadmapTimeline.weeks.map(ms => (
+                               <div key={ms} className="shrink-0 flex items-center justify-center border-l border-slate-200/70 text-[9px] font-medium text-slate-400" style={{ width: WEEK_COL_PX }}>
+                                 {formatDateShort(ms)}
+                               </div>
+                             ))}
+                          </div>
                        </div>
                     </div>
 
@@ -2198,8 +2192,8 @@ function DashboardView({ tickets, onNavigateToList }) {
                           let left = 0;
                           let width = 0;
                           if (item.hasDates) {
-                            left = ((item.startMs - dashboardGanttData.minMs) / dashboardGanttData.totalMs) * 100;
-                            width = ((item.endMs - item.startMs) / dashboardGanttData.totalMs) * 100;
+                            left = msToPx(item.startMs);
+                            width = msToPx(item.endMs) - msToPx(item.startMs);
                           }
 
                           return (
@@ -2211,20 +2205,25 @@ function DashboardView({ tickets, onNavigateToList }) {
                                   </div>
                                   <span className="text-[10px] text-slate-600 line-clamp-1 break-words" title={item.ticket.description}>{item.ticket.description}</span>
                                </div>
-                               <div className="flex-1 relative py-1.5 min-h-[44px]">
-                                  {dashboardMonths.map(ms => {
-                                     const mLeft = ((ms - dashboardGanttData.minMs) / dashboardGanttData.totalMs) * 100;
-                                     if (mLeft < 0 || mLeft > 100) return null;
-                                     return <div key={`grid-${ms}`} className="absolute top-0 bottom-0 border-l border-slate-200/50 pointer-events-none" style={{ left: `${mLeft}%` }}></div>;
+                               <div className="shrink-0 relative py-1.5 min-h-[44px]" style={{ width: roadmapTimeline.totalWidth }}>
+                                  {roadmapTimeline.weeks.map(ms => {
+                                     const isMonthStart = new Date(ms).getDate() <= 7;
+                                     return (
+                                       <div
+                                         key={`grid-${ms}`}
+                                         className={`absolute top-0 bottom-0 pointer-events-none ${isMonthStart ? 'border-l border-slate-300/70' : 'border-l border-slate-200/50'}`}
+                                         style={{ left: msToPx(ms) }}
+                                       />
+                                     );
                                   })}
-                                  
+
                                   {item.hasDates ? (
-                                    <div 
-                                      className="absolute top-1/2 -translate-y-1/2 h-5 rounded shadow-sm border border-black/10 overflow-hidden hover:ring-2 hover:ring-blue-400 transition-all z-10" 
-                                      style={{ 
-                                        left: `calc(${left}% + 1px)`, 
-                                        width: `calc(${width}% - 2px)`, 
-                                        backgroundColor: STATUS_COLORS[item.ticket.status] || '#cbd5e1' 
+                                    <div
+                                      className="absolute top-1/2 -translate-y-1/2 h-5 rounded shadow-sm border border-black/10 overflow-hidden hover:ring-2 hover:ring-blue-400 transition-all z-10"
+                                      style={{
+                                        left: left + 1,
+                                        width: Math.max(width - 2, 2),
+                                        backgroundColor: STATUS_COLORS[item.ticket.status] || '#cbd5e1'
                                       }}
                                       title={`${item.ticket.id} | Progresso: ${item.ticket.progress}% | ${item.ticket.status}`}
                                     >
