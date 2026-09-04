@@ -24,6 +24,8 @@ import {
   updateOwnPassword,
 } from './lib/auth';
 import { adminCreateUser, adminDeleteUser } from './lib/adminUsers';
+import html2canvas from 'html2canvas-pro';
+import { jsPDF } from 'jspdf';
 
 const initialDemandTypes = [
   { id: 'TYPE-1', name: 'Melhorias' },
@@ -2977,30 +2979,56 @@ function PdfReportView({ tickets, showToast }) {
     }, 500);
   };
 
-  const handleDownloadPDF = () => {
+  // Nota técnica: o app usava a lib "html2pdf.js" (que embute uma versão antiga
+  // do html2canvas, carregada em tempo de execução via CDN). Essa versão
+  // antiga não sabe interpretar as cores no formato oklch()/lab() que o
+  // Tailwind CSS v4 passou a usar por padrão em toda a paleta de cores — ela
+  // quebra com o erro "Attempting to parse an unsupported color function
+  // 'oklch'" assim que tenta capturar qualquer elemento colorido, o que fazia
+  // a geração do PDF falhar sempre (o botão parecia não fazer nada, ou o
+  // download nunca completava). A correção é usar "html2canvas-pro" — um fork
+  // mantido, com a mesma API, que entende essas cores modernas — junto com o
+  // jsPDF, ambos agora como dependências reais do projeto (sem depender de
+  // script externo em tempo de execução, o que também evita falhas por causa
+  // de rede/proxy corporativo). O PDF é montado página a página (uma demanda
+  // por página, replicando o que a classe "break-after-page" já fazia na
+  // impressão pelo navegador).
+  const handleDownloadPDF = async () => {
     if (showToast) showToast("A gerar arquivo PDF. Isto pode demorar alguns segundos...", "success");
-    
-    const element = document.getElementById('pdf-report-content');
-    if (!element) return;
 
-    const opt = {
-      margin:       10,
-      filename:     `Relatorio_Demandas_${new Date().toISOString().split('T')[0]}.pdf`,
-      image:        { type: 'jpeg', quality: 0.98 },
-      html2canvas:  { scale: 2, windowWidth: 1200 }, 
-      jsPDF:        { unit: 'mm', format: 'a4', orientation: 'portrait' },
-      pagebreak:    { mode: ['css', 'legacy'] } 
-    };
+    const container = document.getElementById('pdf-report-content');
+    if (!container) return;
 
-    if (window.html2pdf) {
-      window.html2pdf().set(opt).from(element).save();
-    } else {
-      const script = document.createElement('script');
-      script.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js';
-      script.onload = () => {
-        window.html2pdf().set(opt).from(element).save();
-      };
-      document.head.appendChild(script);
+    try {
+      const pages = Array.from(container.children).filter((el) => el.nodeType === 1);
+      if (pages.length === 0) return;
+
+      const pdf = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait' });
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const pageHeight = pdf.internal.pageSize.getHeight();
+      const margin = 10;
+      const usableWidth = pageWidth - margin * 2;
+      const usableHeight = pageHeight - margin * 2;
+
+      for (let i = 0; i < pages.length; i++) {
+        const canvas = await html2canvas(pages[i], { scale: 2, windowWidth: 1200, useCORS: true });
+        const imgData = canvas.toDataURL('image/jpeg', 0.98);
+        let renderWidth = usableWidth;
+        let renderHeight = (canvas.height * usableWidth) / canvas.width;
+        if (renderHeight > usableHeight) {
+          const ratio = usableHeight / renderHeight;
+          renderHeight = usableHeight;
+          renderWidth = renderWidth * ratio;
+        }
+        if (i > 0) pdf.addPage();
+        pdf.addImage(imgData, 'JPEG', margin, margin, renderWidth, renderHeight);
+      }
+
+      pdf.save(`Relatorio_Demandas_${new Date().toISOString().split('T')[0]}.pdf`);
+      if (showToast) showToast("PDF gerado com sucesso!", "success");
+    } catch (err) {
+      console.error('Erro ao gerar PDF:', err);
+      if (showToast) showToast("Erro ao gerar o PDF. Tente novamente ou use 'Imprimir (Navegador)'.", "error");
     }
   };
 
