@@ -470,7 +470,9 @@ function NotificationBell({ notifications, onMarkRead, onMarkAllRead, onOpenTick
 
 function MultiSelectFilter({ options, selected, onChange, label }) {
   const [isOpen, setIsOpen] = useState(false);
+  const [search, setSearch] = useState('');
   const containerRef = useRef(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const handleClickOutside = (event) => {
@@ -479,6 +481,16 @@ function MultiSelectFilter({ options, selected, onChange, label }) {
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
+
+  // Ao abrir, limpa a busca anterior e já foca no campo de digitação — listas
+  // longas (ex.: todas as demandas) eram só uma lista de checkboxes para
+  // rolar; agora dá para digitar parte do nome/ID para achar mais rápido.
+  useEffect(() => {
+    if (isOpen) {
+      setSearch('');
+      requestAnimationFrame(() => searchInputRef.current?.focus());
+    }
+  }, [isOpen]);
 
   const handleToggle = (opt) => {
     if (opt === 'Todos') {
@@ -495,10 +507,14 @@ function MultiSelectFilter({ options, selected, onChange, label }) {
     onChange(newSelected);
   };
 
+  const filteredOptions = search.trim()
+    ? options.filter(opt => opt.toLowerCase().includes(search.trim().toLowerCase()))
+    : options;
+
   return (
     <div className="relative" ref={containerRef}>
       <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">{label}</label>
-      <div 
+      <div
         className="w-full border border-slate-300 rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-blue-500 text-sm bg-white cursor-pointer flex justify-between items-center"
         onClick={() => setIsOpen(!isOpen)}
       >
@@ -508,17 +524,38 @@ function MultiSelectFilter({ options, selected, onChange, label }) {
         <ChevronDown size={14} className={`text-slate-400 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
       </div>
       {isOpen && (
-        <div className="absolute top-full left-0 mt-1 w-full bg-white border border-slate-200 rounded-lg shadow-xl z-50 max-h-60 overflow-y-auto">
-          <label className="flex items-center gap-3 px-3 py-2.5 hover:bg-slate-50 cursor-pointer text-sm font-bold text-slate-700 border-b border-slate-100 sticky top-0 bg-white">
-            <input type="checkbox" checked={selected.includes('Todos')} onChange={() => handleToggle('Todos')} className="rounded text-blue-600 w-4 h-4" />
-            Selecionar Todos
-          </label>
-          {options.map(opt => (
-            <label key={opt} className="flex items-center gap-3 px-3 py-2 hover:bg-slate-50 cursor-pointer text-sm text-slate-600">
-              <input type="checkbox" checked={selected.includes(opt)} onChange={() => handleToggle(opt)} className="rounded text-blue-600 w-4 h-4" />
-              <span className="truncate">{opt}</span>
-            </label>
-          ))}
+        <div className="absolute top-full left-0 mt-1 w-full bg-white border border-slate-200 rounded-lg shadow-xl z-50 flex flex-col">
+          <div className="p-2 border-b border-slate-100 sticky top-0 bg-white">
+            <div className="relative">
+              <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input
+                ref={searchInputRef}
+                type="text"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                onClick={(e) => e.stopPropagation()}
+                onKeyDown={(e) => e.stopPropagation()}
+                placeholder="Digite para buscar..."
+                className="w-full border border-slate-200 rounded-md pl-7 pr-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50 focus:bg-white"
+              />
+            </div>
+          </div>
+          <div className="max-h-52 overflow-y-auto">
+            {!search.trim() && (
+              <label className="flex items-center gap-3 px-3 py-2.5 hover:bg-slate-50 cursor-pointer text-sm font-bold text-slate-700 border-b border-slate-100">
+                <input type="checkbox" checked={selected.includes('Todos')} onChange={() => handleToggle('Todos')} className="rounded text-blue-600 w-4 h-4" />
+                Selecionar Todos
+              </label>
+            )}
+            {filteredOptions.length === 0 ? (
+              <p className="text-xs text-slate-400 italic text-center py-4 px-3">Nenhum resultado para "{search}".</p>
+            ) : filteredOptions.map(opt => (
+              <label key={opt} className="flex items-center gap-3 px-3 py-2 hover:bg-slate-50 cursor-pointer text-sm text-slate-600">
+                <input type="checkbox" checked={selected.includes(opt)} onChange={() => handleToggle(opt)} className="rounded text-blue-600 w-4 h-4" />
+                <span className="truncate">{opt}</span>
+              </label>
+            ))}
+          </div>
         </div>
       )}
     </div>
@@ -3567,6 +3604,11 @@ function PrintableOnePage({ ticket, pageNumber, totalPages }) {
   
   const ticketHistory = ticket.statusHistory || [{ status: ticket.status, date: ticket.logs?.[0]?.date || new Date().toISOString().split('T')[0] }];
   const sortedLogs = sortLogsDesc(ticket.logs);
+  // Nomes da equipe de execução (Recursos) — antes viviam espremidos numa das
+  // 7 caixinhas do topo (grid-cols-7) e truncavam com "..." sempre que havia
+  // mais de um nome. Agora viram uma lista de badges numa caixa própria, de
+  // ponta a ponta da página, abaixo do cronograma.
+  const resourceNames = ticket.recursos?.length > 0 ? ticket.recursos : (ticket.recurso ? [ticket.recurso] : []);
 
   return (
     <div className="flex flex-col bg-white font-sans text-slate-800 space-y-6 print:block">
@@ -3591,7 +3633,7 @@ function PrintableOnePage({ ticket, pageNumber, totalPages }) {
         </div>
       </div>
 
-      <div className="grid grid-cols-7 gap-4 no-break shrink-0">
+      <div className="grid grid-cols-6 gap-4 no-break shrink-0">
         <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 border-l-4" style={{borderLeftColor: STATUS_COLORS[ticket.status] || '#CBD5E1'}}>
           <p className="text-[10px] text-slate-500 font-bold uppercase mb-1">Status Atual</p>
           <p className="font-black text-sm truncate" style={{color: STATUS_COLORS[ticket.status]}}>{ticket.status}</p>
@@ -3610,10 +3652,6 @@ function PrintableOnePage({ ticket, pageNumber, totalPages }) {
         <div className="bg-slate-50 border border-slate-200 rounded-xl p-4">
           <p className="text-[10px] text-slate-500 font-bold uppercase mb-1">Analista Resp.</p>
           <p className="font-bold text-sm text-slate-800 truncate">{ticket.analyst || '-'}</p>
-        </div>
-        <div className="bg-slate-50 border border-slate-200 rounded-xl p-4">
-          <p className="text-[10px] text-slate-500 font-bold uppercase mb-1">Recursos (Equipe)</p>
-          <p className="font-bold text-sm text-slate-800 truncate">{ticket.recursos?.length > 0 ? ticket.recursos.join(', ') : (ticket.recurso || '-')}</p>
         </div>
         <div className="bg-slate-50 border border-slate-200 rounded-xl p-4">
           <p className="text-[10px] text-slate-500 font-bold uppercase mb-1">Patrocinador</p>
@@ -3675,6 +3713,39 @@ function PrintableOnePage({ ticket, pageNumber, totalPages }) {
               );
             })}
           </div>
+        </div>
+      </div>
+
+      <div className="border border-slate-200 rounded-xl overflow-hidden flex flex-col w-full no-break shrink-0">
+        <div className="p-3 border-b border-slate-200 bg-slate-100 flex items-center gap-2">
+          <UserCircle size={16} className="text-slate-500" />
+          <h3 className="font-bold text-sm text-slate-700 uppercase tracking-wider">Equipe e Envolvidos</h3>
+        </div>
+        <div className="p-5 grid grid-cols-1 sm:grid-cols-3 gap-5 border-b border-slate-100">
+          <div>
+            <p className="text-[10px] text-slate-500 font-bold uppercase mb-1">Key User</p>
+            <p className="font-bold text-sm text-slate-800">{ticket.keyUser || '-'}</p>
+          </div>
+          <div>
+            <p className="text-[10px] text-slate-500 font-bold uppercase mb-1">Analista Resp.</p>
+            <p className="font-bold text-sm text-slate-800">{ticket.analyst || '-'}</p>
+          </div>
+          <div>
+            <p className="text-[10px] text-slate-500 font-bold uppercase mb-1">Patrocinador</p>
+            <p className="font-bold text-sm text-slate-800">{ticket.sponsor || '-'}</p>
+          </div>
+        </div>
+        <div className="p-5">
+          <p className="text-[10px] text-slate-500 font-bold uppercase mb-2">Recursos (Equipe de Execução)</p>
+          {resourceNames.length > 0 ? (
+            <div className="flex flex-wrap gap-2">
+              {resourceNames.map((nome, i) => (
+                <span key={i} className="inline-flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-full px-3 py-1 text-xs font-semibold text-slate-700">
+                  <span className="w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0"></span>{nome}
+                </span>
+              ))}
+            </div>
+          ) : <p className="text-sm text-slate-400 italic">Nenhum recurso alocado.</p>}
         </div>
       </div>
 
