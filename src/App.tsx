@@ -3706,6 +3706,15 @@ function PrintableOnePage({ ticket, pageNumber, totalPages }) {
               // Trava defensiva: garante que nenhuma barra ultrapasse
               // matematicamente os 100% da faixa (evita arredondamento/():
               // datas iguais ao limite máximo empurrando a barra para fora).
+              // Isso por si só não bastava: uma fase de duração ~0 (ex.:
+              // início e fim no mesmo dia) perto do fim do cronograma tem
+              // largura ~0%, mas o "left" (`min-width: 30/40px` no CSS)
+              // ainda força um tamanho mínimo em pixels — e como esse mínimo
+              // não é percentual, a barra continuava vazando para fora do
+              // quadro mesmo com a largura em % corrigida. Por isso o `left`
+              // de cada barra usa `min(X%, calc(100% - <mesmo mínimo em
+              // px>))`, garantindo que "posição + tamanho mínimo" nunca
+              // ultrapasse a borda direita da faixa.
               pWidthPos = Math.max(0, Math.min(pWidthPos, 100 - pLeftPos));
               aWidthPos = Math.max(0, Math.min(aWidthPos, 100 - aLeftPos));
               // Quando a barra termina perto do fim da faixa (fases mais
@@ -3724,10 +3733,10 @@ function PrintableOnePage({ ticket, pageNumber, totalPages }) {
                   <div className="w-[75%] relative flex flex-col justify-center gap-1.5 px-2">
                     {(phase.plannedStartMs && phase.plannedEndMs) ? (
                       <div className="relative h-3">
-                        <div className="absolute h-3 rounded bg-slate-200 opacity-90 print:bg-slate-200 print:opacity-100" style={{ left: `${pLeftPos}%`, width: `${pWidthPos}%`, minWidth: '30px' }}></div>
+                        <div className="absolute h-3 rounded bg-slate-200 opacity-90 print:bg-slate-200 print:opacity-100" style={{ left: `min(${pLeftPos}%, calc(100% - 30px))`, width: `${pWidthPos}%`, minWidth: '30px' }}></div>
                         <span
                           className="absolute top-0 h-3 flex items-center text-[8px] font-bold text-slate-400 whitespace-nowrap"
-                          style={pLabelBefore ? { right: `calc(${100 - pLeftPos}% + 4px)` } : { left: `calc(${pLeftPos + pWidthPos}% + 4px)` }}
+                          style={pLabelBefore ? { right: `max(calc(${100 - pLeftPos}% + 4px), 34px)` } : { left: `calc(max(${pLeftPos + pWidthPos}%, min(${pLeftPos}%, 100% - 30px) + 30px) + 4px)` }}
                         >
                            {formatDateShortYear(phase.plannedStartMs)} a {formatDateShortYear(phase.plannedEndMs)}
                         </span>
@@ -3735,12 +3744,12 @@ function PrintableOnePage({ ticket, pageNumber, totalPages }) {
                     ) : <div className="h-3"></div>}
                     {phase.actualStartMs ? (
                       <div className="relative h-4">
-                        <div className="absolute h-4 rounded bg-slate-100 border border-slate-300 print:bg-slate-100" style={{ left: `${aLeftPos}%`, width: `${aWidthPos}%`, minWidth: '40px' }}>
+                        <div className="absolute h-4 rounded bg-slate-100 border border-slate-300 print:bg-slate-100" style={{ left: `min(${aLeftPos}%, calc(100% - 40px))`, width: `${aWidthPos}%`, minWidth: '40px' }}>
                           <div className={`absolute top-0 left-0 h-full ${phase.progress === 100 ? 'bg-emerald-500' : (phase.progress > 0 ? 'bg-blue-500' : 'bg-slate-300')} print:opacity-100`} style={{ width: `${phase.progress}%`, minWidth: '2px' }}></div>
                         </div>
                         <div
                           className="absolute top-0 h-4 flex items-center gap-1.5 pointer-events-none whitespace-nowrap"
-                          style={aLabelBefore ? { right: `calc(${100 - aLeftPos}% + 6px)` } : { left: `calc(${aLeftPos + aWidthPos}% + 6px)` }}
+                          style={aLabelBefore ? { right: `max(calc(${100 - aLeftPos}% + 6px), 46px)` } : { left: `calc(max(${aLeftPos + aWidthPos}%, min(${aLeftPos}%, 100% - 40px) + 40px) + 6px)` }}
                         >
                            <span className="text-[9px] font-black text-slate-700">{phase.progress}%</span>
                            <span className="text-[8px] font-bold text-slate-500 flex items-center gap-1">
@@ -4600,10 +4609,10 @@ function TicketModal({ ticket, tickets = [], projects = [], demandTypes = [], sy
 
                               {(phase.plannedStartMs && phase.plannedEndMs) ? (
                                 <div className="relative h-4">
-                                  <div className="absolute h-4 rounded-md bg-slate-200 opacity-90" style={{ left: `calc(${pLeftPos}% - 0.5rem)`, width: `${pWidthPos}%`, minWidth: '40px' }}></div>
+                                  <div className="absolute h-4 rounded-md bg-slate-200 opacity-90" style={{ left: `min(calc(${pLeftPos}% - 0.5rem), calc(100% - 40px))`, width: `${pWidthPos}%`, minWidth: '40px' }}></div>
                                   <span
                                     className="absolute top-0 h-4 flex items-center text-[9px] font-bold text-slate-400 whitespace-nowrap"
-                                    style={pLabelBefore ? { right: `calc(${100 - pLeftPos}% + 0.5rem + 6px)` } : { left: `calc(${pLeftPos + pWidthPos}% - 0.5rem + 6px)` }}
+                                    style={pLabelBefore ? { right: `max(calc(${100 - pLeftPos}% + 0.5rem + 6px), 46px)` } : { left: `calc(max(calc(${pLeftPos + pWidthPos}% - 0.5rem), calc(min(calc(${pLeftPos}% - 0.5rem), calc(100% - 40px)) + 40px)) + 6px)` }}
                                   >
                                      {formatDateShortYear(phase.plannedStartMs)} a {formatDateShortYear(phase.plannedEndMs)}
                                   </span>
@@ -4612,14 +4621,14 @@ function TicketModal({ ticket, tickets = [], projects = [], demandTypes = [], sy
 
                               {phase.actualStartMs ? (
                                 <div className="relative h-6">
-                                  <div className={`absolute h-6 rounded-md bg-slate-100 shadow-sm border border-slate-300 transition-shadow ${dragState?.phaseName === phase.name ? 'ring-2 ring-blue-400 shadow-md' : ''}`} style={{ left: `calc(${aLeftPos}% - 0.5rem)`, width: `${aWidthPos}%`, minWidth: '70px' }}>
+                                  <div className={`absolute h-6 rounded-md bg-slate-100 shadow-sm border border-slate-300 transition-shadow ${dragState?.phaseName === phase.name ? 'ring-2 ring-blue-400 shadow-md' : ''}`} style={{ left: `min(calc(${aLeftPos}% - 0.5rem), calc(100% - 70px))`, width: `${aWidthPos}%`, minWidth: '70px' }}>
                                     <div className={`absolute top-0 left-0 h-full rounded-md ${phase.progress === 100 ? 'bg-emerald-500' : (phase.progress > 0 ? 'bg-blue-500' : 'bg-slate-300')}`} style={{ width: `${phase.progress}%`, minWidth: '2px' }}></div>
                                     <div className="absolute top-0 left-0 bottom-0 w-3 cursor-ew-resize bg-black/0 hover:bg-black/10 transition-colors rounded-l-md z-10" onMouseDown={(e) => startDrag(e, phase.name, 'start')}></div>
                                     {phase.actualEndMs && <div className="absolute top-0 right-0 bottom-0 w-3 cursor-ew-resize bg-black/0 hover:bg-black/10 transition-colors rounded-r-md z-10" onMouseDown={(e) => startDrag(e, phase.name, 'end')}></div>}
                                   </div>
                                   <div
                                     className="absolute top-0 h-6 flex items-center gap-1.5 pointer-events-none whitespace-nowrap"
-                                    style={aLabelBefore ? { right: `calc(${100 - aLeftPos}% + 0.5rem + 8px)` } : { left: `calc(${aLeftPos + aWidthPos}% - 0.5rem + 8px)` }}
+                                    style={aLabelBefore ? { right: `max(calc(${100 - aLeftPos}% + 0.5rem + 8px), 78px)` } : { left: `calc(max(calc(${aLeftPos + aWidthPos}% - 0.5rem), calc(min(calc(${aLeftPos}% - 0.5rem), calc(100% - 70px)) + 70px)) + 8px)` }}
                                   >
                                      <span className="text-[11px] font-black text-slate-700">{phase.progress}%</span>
                                      <span className="text-[10px] font-bold text-slate-500 flex items-center gap-1">
