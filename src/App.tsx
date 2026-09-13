@@ -11,7 +11,7 @@ import {
   Database, FileSpreadsheet, FileJson, FolderTree,
   ChevronUp, ChevronDown, ChevronLeft, ChevronRight, ArrowUpDown, RefreshCcw, Printer, Kanban, XCircle, Tag,
   DollarSign, ClipboardList, Settings, Radar, LogOut, Shield, Lock, Unlock, KeyRound, Map,
-  Radio, LogIn, TrendingUp
+  Radio, LogIn, TrendingUp, Bell, AtSign, Link2, Zap
 } from 'lucide-react';
 import { db, doc, setDoc, deleteDoc, collection, onSnapshot } from './lib/dataStore';
 import { callClaudeWithRetry } from './lib/claude';
@@ -331,6 +331,20 @@ function ticketsToCsv(tickets) {
   return '﻿' + [headers, ...rows].map(row => row.map(csvEscape).join(',')).join('\r\n');
 }
 
+// Extrai @menções de um texto de comentário, comparando com os nomes reais
+// dos usuários do sistema (evita "menções" acidentais para nomes que não
+// existem, e resolve o id de cada usuário mencionado para notificar).
+function extractMentionsFromText(text, appUsers) {
+  const found = [];
+  (appUsers || []).forEach(u => {
+    if (!u.name) return;
+    const escaped = u.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const pattern = new RegExp(`@${escaped}(?=[\\s,.;:!?)]|$)`);
+    if (pattern.test(text)) found.push({ id: u.id, name: u.name });
+  });
+  return found;
+}
+
 function downloadTextFile(filename, content, mimeType) {
   const blob = new Blob([content], { type: mimeType });
   const url = URL.createObjectURL(blob);
@@ -408,6 +422,57 @@ function ChartCard({ title, children, className = '' }) {
     <div className={`bg-white rounded-xl shadow-sm border border-slate-200 p-5 flex flex-col ${className}`}>
       <h3 className="font-semibold text-slate-700 mb-6">{title}</h3>
       <div className="flex-1 w-full">{children}</div>
+    </div>
+  );
+}
+
+function NotificationBell({ notifications, onMarkRead, onMarkAllRead, onOpenTicket }) {
+  const [isOpen, setIsOpen] = useState(false);
+  const containerRef = useRef(null);
+  const unreadCount = notifications.filter(n => !n.read).length;
+
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (containerRef.current && !containerRef.current.contains(event.target)) setIsOpen(false);
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  return (
+    <div className="relative" ref={containerRef}>
+      <button onClick={() => setIsOpen(v => !v)} className="relative p-2 rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-700 transition-colors" title="Notificações">
+        <Bell size={20} />
+        {unreadCount > 0 && (
+          <span className="absolute -top-0.5 -right-0.5 bg-red-500 text-white text-[10px] font-bold rounded-full w-4 h-4 flex items-center justify-center">{unreadCount > 9 ? '9+' : unreadCount}</span>
+        )}
+      </button>
+      {isOpen && (
+        <div className="absolute right-0 mt-2 w-80 bg-white border border-slate-200 rounded-xl shadow-xl z-50 overflow-hidden">
+          <div className="p-3 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+            <span className="font-bold text-sm text-slate-700">Notificações</span>
+            {unreadCount > 0 && <button onClick={onMarkAllRead} className="text-xs font-bold text-blue-600 hover:text-blue-800">Marcar todas como lidas</button>}
+          </div>
+          <div className="max-h-96 overflow-y-auto divide-y divide-slate-100">
+            {notifications.length === 0 ? (
+              <p className="text-sm text-slate-400 text-center py-8">Nenhuma notificação.</p>
+            ) : notifications.slice(0, 30).map(n => (
+              <button
+                key={n.id}
+                type="button"
+                onClick={() => { if (!n.read) onMarkRead(n.id); onOpenTicket(n.ticketId); setIsOpen(false); }}
+                className={`w-full text-left p-3 hover:bg-slate-50 transition-colors flex gap-2 items-start ${!n.read ? 'bg-blue-50/50' : ''}`}
+              >
+                {!n.read ? <span className="w-2 h-2 rounded-full bg-blue-500 mt-1.5 shrink-0"></span> : <span className="w-2 shrink-0"></span>}
+                <div className="min-w-0">
+                  <p className="text-xs text-slate-700 line-clamp-2">{n.text}</p>
+                  <p className="text-[10px] text-slate-400 mt-1">{n.fromName} · {n.ticketId}</p>
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -510,6 +575,8 @@ export default function App() {
   const [appUsers, setAppUsers] = useState<any[]>([]); 
   const [sponsors, setSponsors] = useState<any[]>([]);
   const [sprints, setSprints] = useState<any[]>([]);
+  const [notifications, setNotifications] = useState<any[]>([]);
+  const [automationRules, setAutomationRules] = useState<any[]>([]);
   const [accessLogs, setAccessLogs] = useState<any[]>([]);
   const [presence, setPresence] = useState<any[]>([]);
   
@@ -779,6 +846,23 @@ export default function App() {
       setSprints(fetchedSprints);
     }, (error) => console.error("Erro ao carregar sprints:", error));
 
+    // NOTIFICATIONS — a política de RLS (ver supabase/schema.sql) já garante
+    // que cada usuário só recebe de volta as próprias notificações; não há
+    // filtro por usuário aqui no client.
+    const notificationsRef = collection(db, 'artifacts', appId, 'public', 'data', 'notifications');
+    const unsubscribeNotifications = onSnapshot(notificationsRef, (snapshot) => {
+      const fetchedNotifications = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id }));
+      fetchedNotifications.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+      setNotifications(fetchedNotifications);
+    }, (error) => console.error("Erro ao carregar notificações:", error));
+
+    // AUTOMATION RULES ("quando o status mudar para X, faça Y")
+    const automationRulesRef = collection(db, 'artifacts', appId, 'public', 'data', 'automationRules');
+    const unsubscribeAutomationRules = onSnapshot(automationRulesRef, (snapshot) => {
+      const fetchedRules = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id }));
+      setAutomationRules(fetchedRules);
+    }, (error) => console.error("Erro ao carregar regras de automação:", error));
+
     // PRESENCE (Usuários Online)
     const presenceRef = collection(db, 'artifacts', appId, 'public', 'data', 'presence');
     const unsubscribePresence = onSnapshot(presenceRef, (snapshot) => {
@@ -805,6 +889,8 @@ export default function App() {
       unsubscribePresence();
       unsubscribeAccessLogs();
       unsubscribeSprints();
+      unsubscribeNotifications();
+      unsubscribeAutomationRules();
     };
   }, [systemUser, appId]);
 
@@ -856,6 +942,75 @@ export default function App() {
     if (!systemUser) return;
     try { await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'sprints', sprintId)); showToast("Sprint removida.", "success"); }
     catch (e) { showToast("Erro ao remover sprint.", "error"); }
+  };
+
+  // --- NOTIFICAÇÕES (menções em comentários e automações) ---
+  const handleCreateNotification = async ({ userId, fromName, ticketId, ticketLabel, text }) => {
+    if (!userId) return;
+    try {
+      const newId = `NOTIF-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'notifications', newId), {
+        userId, fromName: fromName || 'Sistema', ticketId, ticketLabel: ticketLabel || '', text,
+        read: false, createdAt: new Date().toISOString(),
+      });
+    } catch (e) { console.error("Erro ao criar notificação:", e); }
+  };
+
+  const handleMarkNotificationRead = async (notificationId) => {
+    setNotifications(prev => prev.map(n => n.id === notificationId ? { ...n, read: true } : n));
+    try { await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'notifications', notificationId), { read: true }, { merge: true }); }
+    catch (e) { console.error("Erro ao marcar notificação como lida:", e); }
+  };
+
+  const handleMarkAllNotificationsRead = async () => {
+    const unread = notifications.filter(n => !n.read);
+    setNotifications(prev => prev.map(n => ({ ...n, read: true })));
+    for (const n of unread) {
+      try { await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'notifications', n.id), { read: true }, { merge: true }); }
+      catch (e) { console.error("Erro ao marcar notificação como lida:", e); }
+    }
+  };
+
+  // --- MOTOR DE AUTOMAÇÃO ("quando o status mudar para X, faça Y") ---
+  // Roda 100% no client, disparado pelas próprias ações do app (mudança de
+  // status via Kanban ou pelo modal de demanda) — não existe um gatilho no
+  // banco, então uma alteração feita fora do app (direto via API/SQL) não
+  // aciona as regras. Ações suportadas nesta primeira versão: notificar uma
+  // pessoa e/ou definir a prioridade da demanda.
+  const runAutomationRules = async (ticket, newStatus) => {
+    const matchingRules = automationRules.filter(r => r.triggerStatus === newStatus);
+    if (matchingRules.length === 0) return;
+    for (const rule of matchingRules) {
+      if (rule.action?.type === 'notify' && rule.action.targetUserId) {
+        await handleCreateNotification({
+          userId: rule.action.targetUserId,
+          fromName: `Automação: ${rule.name}`,
+          ticketId: ticket.id,
+          ticketLabel: ticket.description,
+          text: `A demanda ${ticket.id} mudou para "${friendlyStatusLabel(newStatus)}".`,
+        });
+      }
+      if (rule.action?.type === 'setPriority' && rule.action.priority) {
+        setTickets(prev => prev.map(t => t.id === ticket.id ? { ...t, priority: rule.action.priority } : t));
+        try { await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'tickets', ticket.id), { priority: rule.action.priority }, { merge: true }); }
+        catch (e) { console.error("Erro ao aplicar prioridade da automação:", e); }
+      }
+    }
+  };
+
+  const handleSaveAutomationRule = async (rule) => {
+    if (!systemUser || !rule.name?.trim() || !rule.triggerStatus || !rule.action?.type) return;
+    try {
+      const newId = rule.id || `RULE-${Date.now()}`;
+      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'automationRules', newId), { ...rule, id: newId }, { merge: true });
+      showToast("Regra de automação salva com sucesso!");
+    } catch (e) { showToast("Erro ao salvar regra de automação.", "error"); }
+  };
+
+  const handleDeleteAutomationRule = async (ruleId) => {
+    if (!systemUser) return;
+    try { await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'automationRules', ruleId)); showToast("Regra removida.", "success"); }
+    catch (e) { showToast("Erro ao remover regra.", "error"); }
   };
 
   const handleSaveSponsor = async (sponsorData) => {
@@ -949,6 +1104,30 @@ export default function App() {
 
       await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'tickets', finalId), cleanTicket, { merge: true });
       showToast(isNewTicket ? "Nova demanda criada com sucesso!" : "Demanda guardada com sucesso!");
+
+      // Dispara notificações de @menção para comentários novos (comparando
+      // com o que já existia antes de salvar) e roda as regras de automação
+      // se o status mudou.
+      const previousComments = selectedTicket?.comments || [];
+      const newComments = (updatedTicket.comments || []).filter(c => !previousComments.some(pc => pc.id === c.id));
+      for (const comment of newComments) {
+        for (const mention of comment.mentions || []) {
+          if (mention.id && mention.id !== systemUser.id) {
+            handleCreateNotification({
+              userId: mention.id,
+              fromName: systemUser.name,
+              ticketId: finalId,
+              ticketLabel: updatedTicket.description,
+              text: `${systemUser.name} mencionou você num comentário da demanda ${finalId}: "${comment.text.slice(0, 140)}"`,
+            });
+          }
+        }
+      }
+
+      if (!isNewTicket && selectedTicket && selectedTicket.status !== updatedTicket.status) {
+        runAutomationRules(updatedTicket, updatedTicket.status);
+      }
+
       if (selectedTicket && activeTab !== 'onepage') { setSelectedTicket(null); setIsNewTicket(false); }
     } catch (error) { showToast("Erro ao guardar no banco de dados. Tente novamente.", "error"); }
   };
@@ -972,7 +1151,11 @@ export default function App() {
     const newHistory = [...currentHistory, { status: newStatus, date: today }];
 
     setTickets(prev => prev.map(t => t.id === ticketId ? { ...t, status: newStatus, statusHistory: newHistory, lastUpdatedAt: nowIso } : t));
-    try { await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'tickets', ticketId), { status: newStatus, statusHistory: newHistory, lastUpdatedAt: nowIso }, { merge: true }); showToast(`Status atualizado para ${newStatus}`, "success"); } 
+    try {
+      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'tickets', ticketId), { status: newStatus, statusHistory: newHistory, lastUpdatedAt: nowIso }, { merge: true });
+      showToast(`Status atualizado para ${newStatus}`, "success");
+      runAutomationRules({ ...ticketToUpdate, status: newStatus }, newStatus);
+    }
     catch (error) { showToast("Erro ao gravar novo status.", "error"); }
   };
 
@@ -1205,7 +1388,18 @@ export default function App() {
               {activeTab === 'accesslogs' && 'Monitoramento de Acessos'}
               {activeTab === 'settings' && 'Configurações do Sistema'}
             </h2>
-            {!systemUser.roles?.includes('Admin') && <div className="bg-blue-50 text-blue-700 px-3 py-1 rounded-full text-xs font-bold border border-blue-200 flex items-center gap-2"><Lock size={12}/> Visão Filtrada: {systemUser.name}</div>}
+            <div className="flex items-center gap-3">
+              {!systemUser.roles?.includes('Admin') && <div className="bg-blue-50 text-blue-700 px-3 py-1 rounded-full text-xs font-bold border border-blue-200 flex items-center gap-2"><Lock size={12}/> Visão Filtrada: {systemUser.name}</div>}
+              <NotificationBell
+                notifications={notifications.filter(n => n.userId === systemUser.id)}
+                onMarkRead={handleMarkNotificationRead}
+                onMarkAllRead={handleMarkAllNotificationsRead}
+                onOpenTicket={(ticketId) => {
+                  const target = tickets.find(t => t.id === ticketId);
+                  if (target) { setSelectedTicket(target); setIsNewTicket(false); setActiveTab('list'); }
+                }}
+              />
+            </div>
           </header>
 
           <div className="flex-1 overflow-auto p-4 md:p-8 print:p-0 print:overflow-visible print:block relative z-10">
@@ -1220,7 +1414,7 @@ export default function App() {
           {activeTab === 'pdfexport' && <PdfReportView tickets={accessibleTickets} showToast={showToast} />}
           {activeTab === 'export' && <DataExportView tickets={accessibleTickets} projects={projects} demandTypes={demandTypes} systems={systems} appUsers={appUsers} sponsors={sponsors} onImportJSON={handleImportJSON} />}
           {activeTab === 'accesslogs' && <AccessLogsView accessLogs={accessLogs} presence={presence} />}
-          {activeTab === 'settings' && <SettingsView demandTypes={demandTypes} onAdd={handleSaveDemandType} onDelete={handleDeleteDemandType} systems={systems} onAddSystem={handleSaveSystem} onDeleteSystem={handleDeleteSystem} appUsers={appUsers} onSaveAppUser={handleSaveAppUser} onDeleteAppUser={handleDeleteAppUser} sponsors={sponsors} onSaveSponsor={handleSaveSponsor} onDeleteSponsor={handleDeleteSponsor} sprints={sprints} onAddSprint={handleSaveSprint} onDeleteSprint={handleDeleteSprint} />}
+          {activeTab === 'settings' && <SettingsView demandTypes={demandTypes} onAdd={handleSaveDemandType} onDelete={handleDeleteDemandType} systems={systems} onAddSystem={handleSaveSystem} onDeleteSystem={handleDeleteSystem} appUsers={appUsers} onSaveAppUser={handleSaveAppUser} onDeleteAppUser={handleDeleteAppUser} sponsors={sponsors} onSaveSponsor={handleSaveSponsor} onDeleteSponsor={handleDeleteSponsor} sprints={sprints} onAddSprint={handleSaveSprint} onDeleteSprint={handleDeleteSprint} automationRules={automationRules} onSaveAutomationRule={handleSaveAutomationRule} onDeleteAutomationRule={handleDeleteAutomationRule} />}
         </div>
       </main>
 
@@ -1238,7 +1432,7 @@ export default function App() {
     )}
 
     {selectedTicket && activeTab !== 'onepage' && (
-      <TicketModal ticket={selectedTicket} projects={projects} demandTypes={demandTypes} systems={systems} appUsers={appUsers} systemUser={systemUser} sponsors={sponsors} onClose={() => { setSelectedTicket(null); setIsNewTicket(false); }} onSave={handleSaveTicket} isNew={isNewTicket} />
+      <TicketModal ticket={selectedTicket} tickets={tickets} projects={projects} demandTypes={demandTypes} systems={systems} appUsers={appUsers} systemUser={systemUser} sponsors={sponsors} onClose={() => { setSelectedTicket(null); setIsNewTicket(false); }} onSave={handleSaveTicket} isNew={isNewTicket} />
     )}
 
     {ticketToDelete && (
@@ -1665,6 +1859,11 @@ function RoadmapView({ tickets, sponsors, systems, onSelect }) {
                         width = ganttMsToPx(item.endMs) - ganttMsToPx(item.startMs);
                       }
 
+                      const unresolvedDeps = (item.ticket.dependsOn || []).filter(depId => {
+                        const dep = tickets.find(t => t.id === depId);
+                        return !dep || dep.status !== '10 - Concluído';
+                      });
+
                       return (
                         <div key={item.ticket.id} className={`flex border-b border-slate-100 group ${item.isDelayed ? 'hover:bg-red-50/20' : 'hover:bg-blue-50/30'}`}>
                            {/* Painel de Informação (Sticky Left) */}
@@ -1678,6 +1877,11 @@ function RoadmapView({ tickets, sponsors, systems, onSelect }) {
                                    {item.isDelayed && (
                                      <span className="flex items-center gap-1 bg-red-100 text-red-700 px-1.5 py-0.5 rounded text-[9px] font-black uppercase border border-red-200 shrink-0 animate-pulse" title="A data final do cronograma foi ultrapassada">
                                        <AlertCircle size={10} /> Atrasado
+                                     </span>
+                                   )}
+                                   {unresolvedDeps.length > 0 && (
+                                     <span className="flex items-center gap-1 bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded text-[9px] font-black uppercase border border-amber-200 shrink-0" title={`Depende de: ${unresolvedDeps.join(', ')} (ainda não concluída${unresolvedDeps.length > 1 ? 's' : ''})`}>
+                                       <Link2 size={10} /> Dependência
                                      </span>
                                    )}
                                 </div>
@@ -1946,26 +2150,127 @@ function SponsorConfigSection({ items, onSave, onDelete }) {
   );
 }
 
-function SettingsView({ demandTypes, onAdd, onDelete, systems, onAddSystem, onDeleteSystem, appUsers, onSaveAppUser, onDeleteAppUser, sponsors, onSaveSponsor, onDeleteSponsor, sprints, onAddSprint, onDeleteSprint }) {
+function SettingsView({ demandTypes, onAdd, onDelete, systems, onAddSystem, onDeleteSystem, appUsers, onSaveAppUser, onDeleteAppUser, sponsors, onSaveSponsor, onDeleteSponsor, sprints, onAddSprint, onDeleteSprint, automationRules, onSaveAutomationRule, onDeleteAutomationRule }) {
   const [activeSettingsTab, setActiveSettingsTab] = useState('listas');
 
   return (
     <div className="space-y-6 max-w-6xl mx-auto animate-in fade-in">
        <div className="flex gap-2 border-b border-slate-200 pb-2 mb-6">
           <button onClick={()=>setActiveSettingsTab('listas')} className={`px-4 py-2 font-bold text-sm rounded-lg transition-colors ${activeSettingsTab === 'listas' ? 'bg-blue-100 text-blue-700' : 'text-slate-500 hover:bg-slate-100'}`}>Listas de Seleção</button>
+          <button onClick={()=>setActiveSettingsTab('automacoes')} className={`px-4 py-2 font-bold text-sm rounded-lg transition-colors flex items-center gap-2 ${activeSettingsTab === 'automacoes' ? 'bg-blue-100 text-blue-700' : 'text-slate-500 hover:bg-slate-100'}`}><Zap size={16}/> Automações</button>
           <button onClick={()=>setActiveSettingsTab('usuarios')} className={`px-4 py-2 font-bold text-sm rounded-lg transition-colors flex items-center gap-2 ${activeSettingsTab === 'usuarios' ? 'bg-blue-100 text-blue-700' : 'text-slate-500 hover:bg-slate-100'}`}><Shield size={16}/> Gestão de Acessos</button>
        </div>
 
-       {activeSettingsTab === 'listas' ? (
+       {activeSettingsTab === 'listas' && (
          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <ConfigSection title="Tipos de Demanda" description="Categorias disponíveis ao criar ou editar uma demanda." items={demandTypes} onAddItem={onAdd} onDeleteItem={onDelete} placeholder="Ex: Melhoria Técnica, Urgente, etc..." />
             <ConfigSection title="Sistemas" description="Sistemas, aplicações ou plataformas disponíveis no portfólio." items={systems} onAddItem={onAddSystem} onDeleteItem={onDeleteSystem} placeholder="Ex: SAP, Jira, TOTVS..." />
             <ConfigSection title="Sprints" description="Sprints disponíveis para atribuir às demandas na Lista de Demandas." items={sprints} onAddItem={onAddSprint} onDeleteItem={onDeleteSprint} placeholder="Ex: Sprint 01/27..." />
             <SponsorConfigSection items={sponsors} onSave={onSaveSponsor} onDelete={onDeleteSponsor} />
          </div>
-       ) : (
+       )}
+       {activeSettingsTab === 'automacoes' && (
+         <AutomationRulesSection rules={automationRules} appUsers={appUsers} onSave={onSaveAutomationRule} onDelete={onDeleteAutomationRule} />
+       )}
+       {activeSettingsTab === 'usuarios' && (
          <UserManagementSection appUsers={appUsers} onSaveAppUser={onSaveAppUser} onDeleteAppUser={onDeleteAppUser} />
        )}
+    </div>
+  );
+}
+
+function AutomationRulesSection({ rules = [], appUsers = [], onSave, onDelete }) {
+  const blankRule = { name: '', triggerStatus: '', action: { type: 'notify', targetUserId: '', priority: 'Alta' } };
+  const [draft, setDraft] = useState(blankRule);
+
+  const canSave = draft.name.trim() && draft.triggerStatus && (
+    (draft.action.type === 'notify' && draft.action.targetUserId) ||
+    (draft.action.type === 'setPriority' && draft.action.priority)
+  );
+
+  const handleSave = () => {
+    if (!canSave) return;
+    onSave(draft);
+    setDraft(blankRule);
+  };
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="border border-slate-200 rounded-xl overflow-hidden shadow-sm bg-white">
+        <div className="bg-slate-50 border-b border-slate-200 p-4">
+          <h4 className="font-bold text-slate-700">Nova Regra</h4>
+          <p className="text-xs text-slate-500 mt-1">Roda automaticamente quando o status de uma demanda muda (pelo Kanban ou pelo modal), enquanto alguém está usando o app — não há gatilho no banco de dados.</p>
+        </div>
+        <div className="p-5 space-y-4">
+          <div>
+            <label className="text-xs font-bold text-slate-500 uppercase mb-1 block">Nome da Regra</label>
+            <input type="text" value={draft.name} onChange={e => setDraft({ ...draft, name: e.target.value })} placeholder="Ex: Avisar patrocinador na conclusão" className="w-full border border-slate-300 rounded-lg p-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50 focus:bg-white" />
+          </div>
+          <div>
+            <label className="text-xs font-bold text-slate-500 uppercase mb-1 block">Quando o status mudar para</label>
+            <select value={draft.triggerStatus} onChange={e => setDraft({ ...draft, triggerStatus: e.target.value })} className="w-full border border-slate-300 rounded-lg p-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50 focus:bg-white">
+              <option value="">-- Selecione um status --</option>
+              {STATUS_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="text-xs font-bold text-slate-500 uppercase mb-1 block">Ação</label>
+            <select value={draft.action.type} onChange={e => setDraft({ ...draft, action: { type: e.target.value, targetUserId: '', priority: 'Alta' } })} className="w-full border border-slate-300 rounded-lg p-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50 focus:bg-white">
+              <option value="notify">Notificar uma pessoa</option>
+              <option value="setPriority">Definir prioridade da demanda</option>
+            </select>
+          </div>
+          {draft.action.type === 'notify' ? (
+            <div>
+              <label className="text-xs font-bold text-slate-500 uppercase mb-1 block">Notificar</label>
+              <select value={draft.action.targetUserId} onChange={e => setDraft({ ...draft, action: { ...draft.action, targetUserId: e.target.value } })} className="w-full border border-slate-300 rounded-lg p-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50 focus:bg-white">
+                <option value="">-- Selecione uma pessoa --</option>
+                {appUsers.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+              </select>
+            </div>
+          ) : (
+            <div>
+              <label className="text-xs font-bold text-slate-500 uppercase mb-1 block">Nova prioridade</label>
+              <select value={draft.action.priority} onChange={e => setDraft({ ...draft, action: { ...draft.action, priority: e.target.value } })} className="w-full border border-slate-300 rounded-lg p-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50 focus:bg-white">
+                {PRIORITY_OPTIONS.map(p => <option key={p} value={p}>{p}</option>)}
+              </select>
+            </div>
+          )}
+          <button onClick={handleSave} disabled={!canSave} className="w-full bg-blue-600 text-white px-4 py-2.5 rounded-lg font-bold text-sm hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-2 transition-colors shadow-sm"><Plus size={16}/> Adicionar Regra</button>
+        </div>
+      </div>
+
+      <div className="border border-slate-200 rounded-xl overflow-hidden shadow-sm bg-white flex flex-col">
+        <div className="bg-slate-50 border-b border-slate-200 p-4">
+          <h4 className="font-bold text-slate-700">Regras Ativas</h4>
+          <p className="text-xs text-slate-500 mt-1">{rules.length} regra(s) configurada(s).</p>
+        </div>
+        <div className="p-5 flex-1 overflow-y-auto max-h-[420px]">
+          {rules.length === 0 ? (
+            <p className="text-sm text-slate-500 italic py-4 text-center">Nenhuma regra cadastrada.</p>
+          ) : (
+            <div className="space-y-3">
+              {rules.map(rule => {
+                const targetUser = appUsers.find(u => u.id === rule.action?.targetUserId);
+                return (
+                  <div key={rule.id} className="flex justify-between items-start border border-slate-200 rounded-lg p-3 bg-slate-50 hover:border-blue-300 transition-colors group">
+                    <div className="min-w-0">
+                      <p className="font-semibold text-sm text-slate-700 truncate">{rule.name}</p>
+                      <p className="text-xs text-slate-500 mt-1">
+                        Quando status = <span className="font-bold">{friendlyStatusLabel(rule.triggerStatus)}</span> →{' '}
+                        {rule.action?.type === 'notify'
+                          ? <>notificar <span className="font-bold">{targetUser?.name || '(usuário removido)'}</span></>
+                          : <>definir prioridade <span className="font-bold">{rule.action?.priority}</span></>}
+                      </p>
+                    </div>
+                    <button onClick={() => onDelete(rule.id)} className="text-slate-400 hover:text-red-600 transition-colors p-1 opacity-0 group-hover:opacity-100 focus:opacity-100 shrink-0"><Trash2 size={16}/></button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -3255,6 +3560,24 @@ function OnePageView({ tickets, onSave, systemUser }) {
             </div>
           )}
 
+          {safeTicket.dependsOn && safeTicket.dependsOn.length > 0 && (
+            <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden flex flex-col">
+              <div className="p-4 border-b border-slate-200 bg-slate-50 flex items-center gap-2"><Link2 size={16} className="text-slate-500"/><h3 className="font-semibold text-slate-700 text-sm">Depende de</h3></div>
+              <div className="p-4 flex flex-wrap gap-2">
+                {safeTicket.dependsOn.map(depId => {
+                  const dep = tickets.find(t => t.id === depId);
+                  const isPending = !dep || dep.status !== '10 - Concluído';
+                  return (
+                    <span key={depId} className={`inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1.5 rounded-lg border ${isPending ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'}`}>
+                      {isPending ? <AlertTriangle size={12}/> : <CheckCircle2 size={12}/>}
+                      {depId}{dep ? ` — ${friendlyStatusLabel(dep.status)}` : ' (fora do seu escopo de visualização)'}
+                    </span>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden flex flex-col w-full" style={{ userSelect: dragState ? 'none' : 'auto' }}>
             <div className="p-4 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
               <h3 className="font-bold text-slate-700">Cronograma do Projeto</h3>
@@ -3788,19 +4111,26 @@ function KanbanView({ tickets, onSelect, onStatusChange }) {
   );
 }
 
-function TicketModal({ ticket, projects = [], demandTypes = [], systems = [], onClose, onSave, isNew, appUsers, systemUser, sponsors = [] }) {
-  const [formData, setFormData] = useState({ 
-    ...ticket, 
+function TicketModal({ ticket, tickets = [], projects = [], demandTypes = [], systems = [], onClose, onSave, isNew, appUsers, systemUser, sponsors = [] }) {
+  const [formData, setFormData] = useState({
+    ...ticket,
     recursos: ticket.recursos || (ticket.recurso ? [ticket.recurso] : []),
     schedule: ticket.schedule || {},
-    customSteps: ticket.customSteps && ticket.customSteps.length > 0 ? ticket.customSteps : [...SCHEDULE_STEPS]
+    customSteps: ticket.customSteps && ticket.customSteps.length > 0 ? ticket.customSteps : [...SCHEDULE_STEPS],
+    dependsOn: ticket.dependsOn || [],
+    comments: ticket.comments || [],
   });
   const [newLog, setNewLog] = useState('');
   const [activeTab, setActiveTab] = useState('geral');
   const [isEnhancingScope, setIsEnhancingScope] = useState(false);
-  
+
   const [editingLogId, setEditingLogId] = useState<any>(null);
   const [editingLogText, setEditingLogText] = useState('');
+
+  // --- Comentários com @menção ---
+  const [newComment, setNewComment] = useState('');
+  const [mentionQuery, setMentionQuery] = useState<any>(null); // { start, end, term } enquanto o usuário digita "@algo"
+  const commentInputRef = useRef(null);
 
   const timelineRef = useRef(null);
   const [dragState, setDragState] = useState<any>(null);
@@ -3944,6 +4274,44 @@ function TicketModal({ ticket, projects = [], demandTypes = [], systems = [], on
     }
   };
 
+  // --- Comentários com @menção ---
+  const handleCommentInput = (e) => {
+    const value = e.target.value;
+    setNewComment(value);
+    const cursorPos = e.target.selectionStart;
+    const textBeforeCursor = value.slice(0, cursorPos);
+    const match = /@([^\s@]*)$/.exec(textBeforeCursor);
+    setMentionQuery(match ? { term: match[1], start: cursorPos - match[0].length, end: cursorPos } : null);
+  };
+
+  const mentionCandidates = mentionQuery
+    ? (appUsers || []).filter(u => u.name && u.id !== systemUser.id && u.name.toLowerCase().includes(mentionQuery.term.toLowerCase())).slice(0, 6)
+    : [];
+
+  const handleSelectMention = (user) => {
+    if (!mentionQuery) return;
+    const before = newComment.slice(0, mentionQuery.start);
+    const after = newComment.slice(mentionQuery.end);
+    setNewComment(`${before}@${user.name} ${after}`);
+    setMentionQuery(null);
+    requestAnimationFrame(() => commentInputRef.current?.focus());
+  };
+
+  const handlePostComment = () => {
+    if (!newComment.trim()) return;
+    const newEntry = {
+      id: Date.now(),
+      date: new Date().toISOString().split('T')[0],
+      author: systemUser.name,
+      authorId: systemUser.id,
+      text: newComment.trim(),
+      mentions: extractMentionsFromText(newComment, appUsers),
+    };
+    setFormData(prev => ({ ...prev, comments: [newEntry, ...(prev.comments || [])] }));
+    setNewComment('');
+    setMentionQuery(null);
+  };
+
   const handleSubmit = (e) => {
     e.preventDefault();
     const updatedTicket = { ...formData };
@@ -4022,6 +4390,7 @@ function TicketModal({ ticket, projects = [], demandTypes = [], systems = [], on
         <div className="flex border-b border-slate-200 bg-slate-50 px-6 shrink-0 overflow-x-auto hide-scrollbar">
           <button onClick={() => setActiveTab('geral')} className={`py-3 px-4 text-sm font-bold border-b-2 transition-colors shrink-0 ${activeTab === 'geral' ? 'border-blue-600 text-blue-700' : 'border-transparent text-slate-500 hover:text-slate-700'}`}>Geral & Diário</button>
           <button onClick={() => setActiveTab('equipe')} className={`py-3 px-4 text-sm font-bold border-b-2 transition-colors shrink-0 ${activeTab === 'equipe' ? 'border-blue-600 text-blue-700' : 'border-transparent text-slate-500 hover:text-slate-700'}`}>Equipe & Envolvidos</button>
+          <button onClick={() => setActiveTab('comentarios')} className={`py-3 px-4 text-sm font-bold border-b-2 transition-colors shrink-0 flex items-center gap-1.5 ${activeTab === 'comentarios' ? 'border-blue-600 text-blue-700' : 'border-transparent text-slate-500 hover:text-slate-700'}`}>Comentários {(formData.comments || []).length > 0 && <span className="bg-slate-200 text-slate-600 text-[10px] px-1.5 py-0.5 rounded-full font-bold">{formData.comments.length}</span>}</button>
           <button onClick={() => setActiveTab('cronograma')} className={`py-3 px-4 text-sm font-bold border-b-2 transition-colors shrink-0 ${activeTab === 'cronograma' ? 'border-blue-600 text-blue-700' : 'border-transparent text-slate-500 hover:text-slate-700'}`}>Cronograma de Fases</button>
           <button onClick={() => setActiveTab('custos')} className={`py-3 px-4 text-sm font-bold border-b-2 transition-colors shrink-0 ${activeTab === 'custos' ? 'border-blue-600 text-blue-700' : 'border-transparent text-slate-500 hover:text-slate-700'}`}>Custos e Esforço</button>
         </div>
@@ -4134,6 +4503,39 @@ function TicketModal({ ticket, projects = [], demandTypes = [], systems = [], on
                       />
                    </div>
                  </div>
+                 <div>
+                   <label className="text-xs font-bold text-slate-500 uppercase mb-1 block flex items-center gap-1.5"><Link2 size={12}/> Depende de (outras demandas)</label>
+                   <div className="w-full border border-slate-300 rounded-lg p-2 max-h-32 overflow-y-auto bg-slate-50 focus-within:ring-2 focus-within:ring-blue-500 focus-within:bg-white transition-colors">
+                      {tickets.filter(t => t.id !== formData.id).length === 0 ? (
+                         <span className="text-xs text-slate-500 italic px-2">Nenhuma outra demanda cadastrada.</span>
+                      ) : (
+                         <div className="flex flex-col gap-1">
+                            {tickets.filter(t => t.id !== formData.id).map(t => {
+                               const isChecked = (formData.dependsOn || []).includes(t.id);
+                               return (
+                                  <label key={t.id} className="flex items-center gap-2 text-sm p-1.5 hover:bg-slate-100 rounded cursor-pointer transition-colors">
+                                     <input
+                                        type="checkbox"
+                                        className="rounded text-blue-600 focus:ring-blue-500 w-4 h-4 cursor-pointer"
+                                        checked={isChecked}
+                                        onChange={(e) => {
+                                           const current = formData.dependsOn || [];
+                                           const newDeps = e.target.checked ? [...current, t.id] : current.filter(id => id !== t.id);
+                                           setFormData({ ...formData, dependsOn: newDeps });
+                                        }}
+                                     />
+                                     <span className="font-mono text-xs text-slate-500 shrink-0">{t.id}</span>
+                                     <span className="truncate">{t.description}</span>
+                                     {t.status !== '10 - Concluído' && (
+                                        <span className="ml-auto text-[10px] font-bold shrink-0" style={{ color: STATUS_COLORS[t.status] }}>{friendlyStatusLabel(t.status)}</span>
+                                     )}
+                                  </label>
+                               );
+                            })}
+                         </div>
+                      )}
+                   </div>
+                 </div>
               </div>
               <div className="flex flex-col gap-4 h-full min-h-[350px]">
                 <div className="flex flex-col border border-slate-200 rounded-xl overflow-hidden shadow-sm shrink-0">
@@ -4183,6 +4585,67 @@ function TicketModal({ ticket, projects = [], demandTypes = [], systems = [], on
                     )) : <p className="text-xs text-slate-400 text-center py-4">Nenhum registro no diário.</p>}
                   </div>
                 </div>
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'comentarios' && (
+            <div className="space-y-4 animate-in fade-in duration-200 max-w-2xl mx-auto">
+              <div className="relative">
+                <label className="text-xs font-bold text-slate-500 uppercase mb-1 block">Novo Comentário</label>
+                <textarea
+                  ref={commentInputRef}
+                  rows="3"
+                  value={newComment}
+                  onChange={handleCommentInput}
+                  onKeyDown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); handlePostComment(); } }}
+                  className="w-full border border-slate-300 rounded-lg p-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50 focus:bg-white"
+                  placeholder="Escreva um comentário... use @ para mencionar alguém (Ctrl+Enter para enviar)"
+                />
+                {mentionQuery && mentionCandidates.length > 0 && (
+                  <div className="absolute left-0 right-0 mt-1 bg-white border border-slate-200 rounded-lg shadow-xl z-10 overflow-hidden">
+                    {mentionCandidates.map(u => (
+                      <button
+                        type="button"
+                        key={u.id}
+                        onClick={() => handleSelectMention(u)}
+                        className="w-full text-left px-3 py-2 text-sm hover:bg-blue-50 flex items-center gap-2"
+                      >
+                        <AtSign size={13} className="text-blue-500 shrink-0" /> {u.name}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <div className="flex justify-end mt-2">
+                  <button type="button" onClick={handlePostComment} disabled={!newComment.trim()} className="bg-blue-600 text-white px-4 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 hover:bg-blue-700 transition-colors disabled:opacity-50">
+                    <Plus size={14} /> Comentar
+                  </button>
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                {(formData.comments || []).length === 0 ? (
+                  <p className="text-sm text-slate-400 text-center py-8">Nenhum comentário ainda.</p>
+                ) : formData.comments.map(c => (
+                  <div key={c.id} className="bg-white border border-slate-200 rounded-lg p-3 shadow-sm">
+                    <div className="flex items-center gap-2 mb-1.5">
+                      <span className="text-xs font-bold text-slate-700">{c.author}</span>
+                      <span className="text-[10px] text-slate-400">{c.date}</span>
+                    </div>
+                    <p className="text-sm text-slate-700 whitespace-pre-wrap">
+                      {(() => {
+                        const mentions = c.mentions || [];
+                        if (mentions.length === 0) return c.text;
+                        const pattern = new RegExp(`(${mentions.map(m => '@' + m.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})`, 'g');
+                        return c.text.split(pattern).map((part, i) =>
+                          mentions.some(m => part === `@${m.name}`)
+                            ? <span key={i} className="text-blue-600 font-semibold">{part}</span>
+                            : <span key={i}>{part}</span>
+                        );
+                      })()}
+                    </p>
+                  </div>
+                ))}
               </div>
             </div>
           )}
