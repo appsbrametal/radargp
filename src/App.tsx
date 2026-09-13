@@ -244,15 +244,6 @@ const sortLogsDesc = (logs) => {
   });
 };
 
-const sortLogsAsc = (logs) => {
-  if (!logs) return [];
-  return [...logs].sort((a, b) => {
-    const dateDiff = new Date(a.date).getTime() - new Date(b.date).getTime();
-    if (dateDiff !== 0) return dateDiff;
-    return (a.id || 0) - (b.id || 0);
-  });
-};
-
 // Calcula o intervalo de datas planejado/realizado de uma demanda a partir do
 // cronograma (mesma regra usada no Roadmap: usa a data real quando existe,
 // senão cai para a planejada). Reaproveitado tanto pelo Roadmap quanto pelo
@@ -1128,7 +1119,7 @@ export default function App() {
         runAutomationRules(updatedTicket, updatedTicket.status);
       }
 
-      if (selectedTicket && activeTab !== 'onepage') { setSelectedTicket(null); setIsNewTicket(false); }
+      if (selectedTicket) { setSelectedTicket(null); setIsNewTicket(false); }
     } catch (error) { showToast("Erro ao guardar no banco de dados. Tente novamente.", "error"); }
   };
 
@@ -1322,8 +1313,7 @@ export default function App() {
               </button>
             </div>
             {!sidebarCollapsed && (
-              <div className="flex items-center justify-between mt-6">
-                <p className="text-[10px] text-slate-400 flex items-center gap-1"><Sparkles size={12} className="text-yellow-400"/> AI Powered</p>
+              <div className="flex items-center justify-end mt-6">
                 <span className="text-[10px] font-mono text-slate-500 bg-slate-800/50 px-2 py-0.5 rounded-full border border-slate-700/50 cursor-default" title={`Versão ${APP_VERSION}`}>{`v${APP_VERSION}`}</span>
               </div>
             )}
@@ -1345,7 +1335,6 @@ export default function App() {
             <NavButton collapsed={sidebarCollapsed} icon={<Kanban size={20} />} label="Kanban" isActive={activeTab === 'kanban'} onClick={() => setActiveTab('kanban')} />
             <NavButton collapsed={sidebarCollapsed} icon={<ListTodo size={20} />} label="Demandas" isActive={activeTab === 'list'} onClick={() => setActiveTab('list')} />
             <NavButton collapsed={sidebarCollapsed} icon={<ClipboardList size={20} />} label="Status Report" isActive={activeTab === 'statusreport'} onClick={() => setActiveTab('statusreport')} />
-            <NavButton collapsed={sidebarCollapsed} icon={<FileText size={20} />} label="One Page" isActive={activeTab === 'onepage'} onClick={() => setActiveTab('onepage')} />
             <NavButton collapsed={sidebarCollapsed} icon={<Printer size={20} />} label="Relatório PDF" isActive={activeTab === 'pdfexport'} onClick={() => setActiveTab('pdfexport')} />
 
             {systemUser.roles?.includes('Admin') && (
@@ -1382,7 +1371,6 @@ export default function App() {
               {activeTab === 'kanban' && 'Quadro Kanban'}
               {activeTab === 'list' && 'Lista de Demandas'}
               {activeTab === 'statusreport' && 'Status Report Executivo'}
-              {activeTab === 'onepage' && 'One Page: Visão Detalhada'}
               {activeTab === 'pdfexport' && 'Exportação de Relatório PDF'}
               {activeTab === 'export' && 'Extração e Backup de Dados'}
               {activeTab === 'accesslogs' && 'Monitoramento de Acessos'}
@@ -1410,7 +1398,6 @@ export default function App() {
           {activeTab === 'kanban' && <KanbanView tickets={accessibleTickets} onSelect={setSelectedTicket} onStatusChange={handleUpdateTicketStatus} />}
           {activeTab === 'list' && <TicketList tickets={accessibleTickets} onSelect={setSelectedTicket} onDeleteClick={setTicketToDelete} onUpdateSprint={handleUpdateSprint} filterStatus={listFilterStatus} setFilterStatus={setListFilterStatus} demandTypes={demandTypes} systems={systems} sponsors={sponsors} sprints={sprints} />}
           {activeTab === 'statusreport' && <StatusReportView tickets={accessibleTickets} onSelect={setSelectedTicket} reports={reports} onSaveReport={handleSaveReport} onDeleteReport={handleDeleteReport} />}
-          {activeTab === 'onepage' && <OnePageView tickets={accessibleTickets} onSave={handleSaveTicket} systemUser={systemUser} />}
           {activeTab === 'pdfexport' && <PdfReportView tickets={accessibleTickets} showToast={showToast} />}
           {activeTab === 'export' && <DataExportView tickets={accessibleTickets} projects={projects} demandTypes={demandTypes} systems={systems} appUsers={appUsers} sponsors={sponsors} onImportJSON={handleImportJSON} />}
           {activeTab === 'accesslogs' && <AccessLogsView accessLogs={accessLogs} presence={presence} />}
@@ -1431,8 +1418,8 @@ export default function App() {
           </button>
     )}
 
-    {selectedTicket && activeTab !== 'onepage' && (
-      <TicketModal ticket={selectedTicket} tickets={tickets} projects={projects} demandTypes={demandTypes} systems={systems} appUsers={appUsers} systemUser={systemUser} sponsors={sponsors} onClose={() => { setSelectedTicket(null); setIsNewTicket(false); }} onSave={handleSaveTicket} isNew={isNewTicket} />
+    {selectedTicket && (
+      <TicketModal ticket={selectedTicket} tickets={tickets} projects={projects} demandTypes={demandTypes} systems={systems} appUsers={appUsers} systemUser={systemUser} sponsors={sponsors} onClose={() => { setSelectedTicket(null); setIsNewTicket(false); }} onSave={handleSaveTicket} isNew={isNewTicket} showToast={showToast} />
     )}
 
     {ticketToDelete && (
@@ -1867,8 +1854,13 @@ function RoadmapView({ tickets, sponsors, systems, onSelect }) {
                       return (
                         <div key={item.ticket.id} className={`flex border-b border-slate-100 group ${item.isDelayed ? 'hover:bg-red-50/20' : 'hover:bg-blue-50/30'}`}>
                            {/* Painel de Informação (Sticky Left) */}
+                           {/* bg sólido (não translúcido) é essencial aqui: esta coluna é
+                               "sticky left" por cima da área do Gantt, que rola por baixo dela
+                               no mesmo container. Com bg-red-50/30 (translúcido) a barra/grade
+                               do Gantt aparecia por trás do texto da demanda ao rolar — trocado
+                               para bg-red-50 sólido. */}
                            <div
-                             className={`w-[350px] shrink-0 sticky left-0 z-20 p-3 cursor-pointer shadow-[2px_0_5px_rgba(0,0,0,0.02)] transition-colors overflow-hidden border-r border-slate-200 ${item.isDelayed ? 'bg-red-50/30 group-hover:bg-red-50/60 border-l-4 border-l-red-500' : 'bg-white group-hover:bg-blue-50/30'}`}
+                             className={`w-[350px] shrink-0 sticky left-0 z-20 p-3 cursor-pointer shadow-[2px_0_5px_rgba(0,0,0,0.02)] transition-colors overflow-hidden border-r border-slate-200 ${item.isDelayed ? 'bg-red-50 group-hover:bg-red-100 border-l-4 border-l-red-500' : 'bg-white group-hover:bg-blue-50'}`}
                              onClick={() => onSelect(item.ticket)}
                            >
                               <div className="flex items-center justify-between mb-1 gap-2">
@@ -2744,7 +2736,7 @@ function DashboardView({ tickets, onNavigateToList }) {
 
                           return (
                             <div key={item.ticket.id} className="flex border-b border-slate-100 hover:bg-blue-50/30 group">
-                               <div className="w-[280px] shrink-0 sticky left-0 bg-white group-hover:bg-blue-50/30 border-r border-slate-200 z-20 p-2.5 flex flex-col justify-center transition-colors overflow-hidden">
+                               <div className="w-[280px] shrink-0 sticky left-0 bg-white group-hover:bg-blue-50 border-r border-slate-200 z-20 p-2.5 flex flex-col justify-center transition-colors overflow-hidden">
                                   <div className="flex items-center justify-between mb-0.5 gap-2">
                                     <span className="font-bold text-blue-700 text-xs truncate min-w-0 flex-1">{item.ticket.id}</span>
                                     <span className="text-[9px] font-semibold text-slate-400 truncate max-w-[90px] shrink-0" title={item.ticket.analyst}>{item.ticket.analyst}</span>
@@ -2897,6 +2889,7 @@ function StatusReportView({ tickets, onSelect, reports = [], onSaveReport, onDel
   const [filterSprint, setFilterSprint] = useState('Todas');
   const [filterKeyUser, setFilterKeyUser] = useState('Todos');
   const [filterType, setFilterType] = useState('Todos');
+  const [filterTicket, setFilterTicket] = useState('Todas');
   const [aiReport, setAiReport] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
   const [viewingPastReport, setViewingPastReport] = useState<any>(null);
@@ -2904,19 +2897,26 @@ function StatusReportView({ tickets, onSelect, reports = [], onSaveReport, onDel
   const sprints = useMemo(() => ['Todas', ...new Set(tickets.map(t => t.sprint || 'Sem Sprint'))].sort(), [tickets]);
   const keyUsers = useMemo(() => ['Todos', ...new Set(tickets.map(t => t.keyUser).filter(Boolean))].sort(), [tickets]);
   const types = useMemo(() => ['Todos', ...new Set(tickets.map(t => t.type || 'Não Definido'))].sort(), [tickets]);
+  const ticketOptions = useMemo(() => ['Todas', ...tickets.map(t => t.id)].sort((a, b) => a === 'Todas' ? -1 : b === 'Todas' ? 1 : a.localeCompare(b)), [tickets]);
+  const ticketOptionLabels = useMemo(() => {
+    const map: Record<string, string> = {};
+    tickets.forEach(t => { map[t.id] = `${t.id} — ${(t.description || '').slice(0, 60)}`; });
+    return map;
+  }, [tickets]);
 
   const filteredTickets = useMemo(() => {
     return tickets.filter(t => {
       const matchSp = filterSprint === 'Todas' || (t.sprint || 'Sem Sprint') === filterSprint;
       const matchKU = filterKeyUser === 'Todos' || t.keyUser === filterKeyUser;
       const matchTy = filterType === 'Todos' || (t.type || 'Não Definido') === filterType;
-      return matchSp && matchKU && matchTy;
+      const matchTi = filterTicket === 'Todas' || t.id === filterTicket;
+      return matchSp && matchKU && matchTy && matchTi;
     });
-  }, [tickets, filterSprint, filterKeyUser, filterType]);
+  }, [tickets, filterSprint, filterKeyUser, filterType, filterTicket]);
 
   useEffect(() => {
     setViewingPastReport(null);
-  }, [filterSprint, filterKeyUser, filterType]);
+  }, [filterSprint, filterKeyUser, filterType, filterTicket]);
 
   const handleGenerateAIReport = async () => {
     setIsGenerating(true);
@@ -2933,7 +2933,12 @@ function StatusReportView({ tickets, onSelect, reports = [], onSaveReport, onDel
       const result = await callClaudeWithRetry(prompt);
       setAiReport(result);
     } catch (e) {
-      setAiReport("❌ Ocorreu um erro ao gerar o Status Report com a IA. Por favor, verifique a conexão e tente novamente.");
+      // Mostra o motivo real (agora que callClaudeWithRetry devolve a
+      // mensagem de verdade vinda do servidor, em vez de um erro genérico) —
+      // essencial para diagnosticar se o problema é chave da Anthropic
+      // ausente, function não publicada, etc.
+      const detail = e instanceof Error ? e.message : String(e);
+      setAiReport(`❌ Ocorreu um erro ao gerar o Status Report com a IA.\n\nDetalhe técnico: ${detail}`);
     } finally {
       setIsGenerating(false);
     }
@@ -2981,6 +2986,12 @@ function StatusReportView({ tickets, onSelect, reports = [], onSaveReport, onDel
                 {keyUsers.map(k => <option key={k} value={k}>{k}</option>)}
               </select>
             </div>
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-semibold text-slate-500">Demanda:</span>
+              <select className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-white max-w-[220px]" value={filterTicket} onChange={(e) => setFilterTicket(e.target.value)}>
+                {ticketOptions.map(id => <option key={id} value={id} title={ticketOptionLabels[id]}>{id === 'Todas' ? 'Todas' : ticketOptionLabels[id]}</option>)}
+              </select>
+            </div>
             <div className="border-l border-slate-200 pl-4 flex gap-2">
               <button onClick={handlePrint} className="bg-slate-100 hover:bg-slate-200 text-slate-700 px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 transition-colors">
                 <Printer size={16} /> Imprimir
@@ -3015,7 +3026,7 @@ function StatusReportView({ tickets, onSelect, reports = [], onSaveReport, onDel
               )}
 
               {aiReport && !isGenerating && !viewingPastReport && (
-                 <button onClick={() => onSaveReport(aiReport, `Sprint: ${filterSprint} | Key User: ${filterKeyUser} | Tipo: ${filterType}`)} className="w-full bg-emerald-600 text-white px-4 py-2.5 rounded-lg text-sm font-bold flex justify-center items-center gap-2 hover:bg-emerald-700 transition-colors shadow-sm">
+                 <button onClick={() => onSaveReport(aiReport, `Sprint: ${filterSprint} | Key User: ${filterKeyUser} | Tipo: ${filterType} | Demanda: ${filterTicket}`)} className="w-full bg-emerald-600 text-white px-4 py-2.5 rounded-lg text-sm font-bold flex justify-center items-center gap-2 hover:bg-emerald-700 transition-colors shadow-sm">
                    <Save size={16} /> Salvar no Histórico
                  </button>
               )}
@@ -3247,71 +3258,53 @@ function TicketList({ tickets, onSelect, onDeleteClick, onUpdateSprint, filterSt
     return result;
   }, [tickets, searchTerm, filterAnalyst, filterKeyUser, filterSprint, filterType, sortConfig, filterStatus, filterSistema, filterSponsor, filterPriority]);
 
+  const hasListFiltersActive = searchTerm !== '' || filterType !== 'Todos' || filterSistema !== 'Todos' || filterSponsor !== 'Todos'
+    || filterKeyUser !== 'Todos' || filterAnalyst !== 'Todos' || filterSprint !== 'Todas' || filterStatus !== 'Todos' || filterPriority !== 'Todas';
+  const clearListFilters = () => {
+    setSearchTerm('');
+    setFilterType('Todos');
+    setFilterSistema('Todos');
+    setFilterSponsor('Todos');
+    setFilterKeyUser('Todos');
+    setFilterAnalyst('Todos');
+    setFilterSprint('Todas');
+    setFilterStatus('Todos');
+    setFilterPriority('Todas');
+  };
+
   return (
     <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden flex flex-col h-full">
-      <div className="p-4 border-b border-slate-200 flex flex-col lg:flex-row gap-4 justify-between bg-slate-50 flex-wrap">
+      <div className="p-4 border-b border-slate-200 bg-slate-50 flex flex-col gap-3">
         <div className="relative w-full lg:w-80 shrink-0">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
-          <input type="text" placeholder="Pesquisar ID, Descrição ou Tag..." className="w-full pl-10 pr-4 py-2 rounded-lg border border-slate-300 outline-none focus:ring-2 focus:ring-blue-500" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
+          <input type="text" placeholder="Pesquisar ID, Descrição ou Tag..." className="w-full pl-10 pr-4 py-2 rounded-lg border border-slate-300 outline-none focus:ring-2 focus:ring-blue-500 bg-white" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
         </div>
-        <div className="flex flex-wrap items-center gap-4">
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-semibold text-slate-500">Tipo:</span>
-        <select className="border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-blue-500" value={filterType} onChange={(e) => setFilterType(e.target.value)}>
-          {types.map(t => <option key={t} value={t}>{t}</option>)}
-        </select>
-      </div>
-      <div className="flex items-center gap-2">
-        <span className="text-sm font-semibold text-slate-500">Sistema:</span>
-        <select className="border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-blue-500" value={filterSistema} onChange={(e) => setFilterSistema(e.target.value)}>
-          {sistemasList.map(s => <option key={s} value={s}>{s}</option>)}
-        </select>
-      </div>
-      <div className="flex items-center gap-2">
-        <span className="text-sm font-semibold text-slate-500">Patrocinador:</span>
-        <select className="border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-blue-500" value={filterSponsor} onChange={(e) => setFilterSponsor(e.target.value)}>
-          {sponsorsList.map(s => <option key={s} value={s}>{s}</option>)}
-        </select>
-      </div>
-      <div className="flex items-center gap-2">
-        <span className="text-sm font-semibold text-slate-500">Key User:</span>
-            <select className="border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-blue-500" value={filterKeyUser} onChange={(e) => setFilterKeyUser(e.target.value)}>
-              {keyUsers.map(k => <option key={k} value={k}>{k}</option>)}
-            </select>
+        <div className="flex flex-wrap items-end gap-2.5">
+          <div className="flex items-center gap-1.5 text-slate-400 shrink-0 pr-0.5 pb-1.5">
+            <Filter size={14} />
+            <span className="text-[10px] font-bold uppercase tracking-wider">Filtros</span>
           </div>
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-semibold text-slate-500">Analista:</span>
-            <select className="border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-blue-500" value={filterAnalyst} onChange={(e) => setFilterAnalyst(e.target.value)}>
-              {analysts.map(a => <option key={a} value={a}>{a}</option>)}
-            </select>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-semibold text-slate-500">Sprint:</span>
-            <select className="border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-blue-500" value={filterSprint} onChange={(e) => setFilterSprint(e.target.value)}>
-              {sprintFilterOptions.map(s => <option key={s} value={s}>{s}</option>)}
-            </select>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-semibold text-slate-500">Status:</span>
-            <select className="border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-blue-500" value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)}>
-              <option value="Todos">Todos</option>
-              <option value="Em Andamento">Em Andamento</option>
-              {STATUS_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
-            </select>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-semibold text-slate-500">Prioridade:</span>
-            <select className="border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-blue-500" value={filterPriority} onChange={(e) => setFilterPriority(e.target.value)}>
-              <option value="Todas">Todas</option>
-              {PRIORITY_OPTIONS.map(p => <option key={p} value={p}>{p}</option>)}
-            </select>
-          </div>
+          <FilterSelect label="Tipo" value={filterType} onChange={setFilterType} options={types} />
+          <FilterSelect label="Sistema" value={filterSistema} onChange={setFilterSistema} options={sistemasList} />
+          <FilterSelect label="Patrocinador" value={filterSponsor} onChange={setFilterSponsor} options={sponsorsList} />
+          <FilterSelect label="Key User" value={filterKeyUser} onChange={setFilterKeyUser} options={keyUsers} />
+          <FilterSelect label="Analista" value={filterAnalyst} onChange={setFilterAnalyst} options={analysts} />
+          <FilterSelect label="Sprint" value={filterSprint} onChange={setFilterSprint} options={sprintFilterOptions} />
+          <FilterSelect label="Status" value={filterStatus} onChange={setFilterStatus} options={['Todos', 'Em Andamento', ...STATUS_OPTIONS]} />
+          <FilterSelect label="Prioridade" value={filterPriority} onChange={setFilterPriority} options={['Todas', ...PRIORITY_OPTIONS]} />
+
+          {hasListFiltersActive && (
+            <button onClick={clearListFilters} className="text-xs font-semibold text-slate-400 hover:text-slate-700 transition-colors shrink-0 flex items-center gap-1 pb-1.5">
+              <X size={13} /> Limpar filtros
+            </button>
+          )}
+
           <button
             type="button"
             onClick={() => downloadTextFile(`demandas_${new Date().toISOString().split('T')[0]}.csv`, ticketsToCsv(filteredAndSortedTickets), 'text/csv;charset=utf-8')}
             disabled={filteredAndSortedTickets.length === 0}
             title="Exporta as demandas visíveis na tela (com os filtros aplicados) em CSV, para abrir no Excel ou Planilhas Google."
-            className="bg-emerald-600 text-white px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 hover:bg-emerald-700 disabled:opacity-50 transition-colors shrink-0"
+            className="ml-auto bg-emerald-600 text-white px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 hover:bg-emerald-700 disabled:opacity-50 transition-colors shrink-0"
           >
             <FileSpreadsheet size={16} /> Exportar CSV ({filteredAndSortedTickets.length})
           </button>
@@ -3380,372 +3373,31 @@ function TicketList({ tickets, onSelect, onDeleteClick, onUpdateSprint, filterSt
   );
 }
 
-function OnePageView({ tickets, onSave, systemUser }) {
-  const [filterKeyUser, setFilterKeyUser] = useState('Todos');
-  const [filterSprint, setFilterSprint] = useState('Todas');
-  const [filterAnalyst, setFilterAnalyst] = useState('Todos');
-  const [filterSponsor, setFilterSponsor] = useState('Todos');
-  const [filterType, setFilterType] = useState('Todos');
-
-  const keyUsers = useMemo(() => ['Todos', ...new Set(tickets.map(t => t.keyUser).filter(Boolean))].sort(), [tickets]);
-  const sprints = useMemo(() => ['Todas', ...new Set(tickets.map(t => t.sprint || 'Sem Sprint'))].sort(), [tickets]);
-  const analysts = useMemo(() => ['Todos', ...new Set(tickets.map(t => t.analyst).filter(Boolean))].sort(), [tickets]);
-  const sponsors = useMemo(() => ['Todos', ...new Set(tickets.map(t => t.sponsor).filter(Boolean))].sort(), [tickets]);
-  const types = useMemo(() => ['Todos', ...new Set(tickets.map(t => t.type || 'Não Definido'))].sort(), [tickets]);
-
-  const filteredTickets = useMemo(() => {
-    return tickets.filter(t => {
-      const matchKU = filterKeyUser === 'Todos' || t.keyUser === filterKeyUser;
-      const matchSp = filterSprint === 'Todas' || (t.sprint || 'Sem Sprint') === filterSprint;
-      const matchAn = filterAnalyst === 'Todos' || t.analyst === filterAnalyst;
-      const matchSpon = filterSponsor === 'Todos' || t.sponsor === filterSponsor;
-      const matchType = filterType === 'Todos' || (t.type || 'Não Definido') === filterType;
-      return matchKU && matchSp && matchAn && matchSpon && matchType;
-    });
-  }, [tickets, filterKeyUser, filterSprint, filterAnalyst, filterSponsor, filterType]);
-
-  const [selectedId, setSelectedId] = useState(tickets[0]?.id || '');
-
-  useEffect(() => {
-    if (filteredTickets.length > 0) {
-      if (!filteredTickets.find(t => t.id === selectedId)) setSelectedId(filteredTickets[0].id);
-    } else {
-      setSelectedId('');
-    }
-  }, [filteredTickets, selectedId]);
-
-  const safeTicket = useMemo(() => tickets.find(t => t.id === selectedId) || filteredTickets[0] || null, [tickets, selectedId, filteredTickets]);
-
-  // Cache por ticket: antes, trocar de demanda disparava uma nova chamada à
-  // IA toda vez (o resumo era regerado a cada troca de seleção, mesmo se já
-  // tinha sido gerado antes para aquele ticket). Agora fica guardado aqui por
-  // id; só é gerado de novo se ainda não existir no cache ou se o usuário
-  // pedir explicitamente (botão "Atualizar").
-  const [aiCache, setAiCache] = useState<Record<string, { summary?: string; nextSteps?: string }>>({});
-  const [isGeneratingSummary, setIsGeneratingSummary] = useState(false);
-  const [isGeneratingNextSteps, setIsGeneratingNextSteps] = useState(false);
-  const aiSummary = safeTicket ? (aiCache[safeTicket.id]?.summary || '') : '';
-  const aiNextSteps = safeTicket ? (aiCache[safeTicket.id]?.nextSteps || '') : '';
-  const timelineRef = useRef(null);
-  const [localSchedule, setLocalSchedule] = useState<any>({});
-  const [dragState, setDragState] = useState<any>(null); 
-
-  useEffect(() => { if (safeTicket) setLocalSchedule(safeTicket.schedule || {}); }, [safeTicket]);
-
-  const handleGenerateAISummary = async (targetTicket) => {
-    if (!targetTicket) return;
-    setIsGeneratingSummary(true);
-    const historyText = targetTicket.logs && targetTicket.logs.length > 0 ? sortLogsAsc(targetTicket.logs).map(l => `${l.date} (${l.author}): ${l.text}`).join('\n') : "Nenhum histórico registrado.";
-    const prompt = `Resumo executivo do histórico da demanda: ${targetTicket.id} - ${targetTicket.description}. Formate em Markdown.\n${historyText}`;
-    try {
-      const result = await callClaudeWithRetry(prompt);
-      setAiCache(prev => ({ ...prev, [targetTicket.id]: { ...prev[targetTicket.id], summary: result } }));
-    } catch (e) {
-      setAiCache(prev => ({ ...prev, [targetTicket.id]: { ...prev[targetTicket.id], summary: "Erro ao gerar resumo." } }));
-    } finally {
-      setIsGeneratingSummary(false);
-    }
-  };
-
-  const handleGenerateNextSteps = async (targetTicket) => {
-    if (!targetTicket) return;
-    setIsGeneratingNextSteps(true);
-    const historyText = targetTicket.logs && targetTicket.logs.length > 0 ? sortLogsAsc(targetTicket.logs).map(l => `${l.date} (${l.author}): ${l.text}`).join('\n') : "Nenhum histórico registrado.";
-    const prompt = `Atue como um Scrum Master. Analise o status, descrição e histórico desta demanda e liste os 3 próximos passos práticos, lógicos e imediatos para fazê-la avançar. Formate a resposta usando Markdown (bullet points).\nDemanda: ${targetTicket.description}\nStatus Atual: ${targetTicket.status}\nHistórico: ${historyText}`;
-    try {
-      const result = await callClaudeWithRetry(prompt);
-      setAiCache(prev => ({ ...prev, [targetTicket.id]: { ...prev[targetTicket.id], nextSteps: result } }));
-    } catch (e) {
-      setAiCache(prev => ({ ...prev, [targetTicket.id]: { ...prev[targetTicket.id], nextSteps: "Erro ao gerar próximos passos." } }));
-    } finally {
-      setIsGeneratingNextSteps(false);
-    }
-  };
-
-  useEffect(() => {
-    if (safeTicket && !aiCache[safeTicket.id]?.summary) {
-      handleGenerateAISummary(safeTicket);
-    }
-    // Só depende do id selecionado (e do próprio cache, lido na hora) — não
-    // queremos regenerar sempre que `tickets` mudar por causa do realtime.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedId, safeTicket?.id]);
-
-  const dynamicTicket = useMemo(() => ({ ...safeTicket, schedule: localSchedule }), [safeTicket, localSchedule]);
-  const ganttPhases = useMemo(() => dynamicTicket ? generateGanttPhases(dynamicTicket) : [], [dynamicTicket]);
-  const sortedLogsDesc = useMemo(() => sortLogsDesc(safeTicket?.logs), [safeTicket]);
-  const ticketHistory = safeTicket?.statusHistory || [{ status: safeTicket?.status, date: safeTicket?.logs?.[0]?.date || new Date().toISOString().split('T')[0] }];
-
-  let minDateMs = Infinity, maxDateMs = 0;
-  ganttPhases.forEach(p => {
-     if (p.plannedStartMs) minDateMs = Math.min(minDateMs, p.plannedStartMs);
-     if (p.actualStartMs) minDateMs = Math.min(minDateMs, p.actualStartMs);
-     if (p.plannedEndMs) maxDateMs = Math.max(maxDateMs, p.plannedEndMs);
-     if (p.actualEndMs) maxDateMs = Math.max(maxDateMs, p.actualEndMs);
-  });
-  if (minDateMs === Infinity) minDateMs = new Date().getTime();
-  if (maxDateMs === 0) maxDateMs = new Date().getTime() + 86400000;
-  const totalMs = Math.max(maxDateMs - minDateMs, 86400000);
-
-  const startDrag = (e, phaseName, handleType) => {
-    e.preventDefault();
-    if (!timelineRef.current) return;
-    const pxPerMs = timelineRef.current.offsetWidth / totalMs;
-    const phaseData = localSchedule[phaseName] || {};
-    let initialDateStr = handleType === 'start' ? phaseData.actualStart : phaseData.actualEnd;
-    let initialDateMs = initialDateStr ? new Date(initialDateStr + 'T00:00:00').getTime() : new Date().getTime();
-    setDragState({ phaseName, handleType, initialX: e.clientX, initialDateMs, pxPerMs });
-  };
-
-  useEffect(() => {
-    if (!dragState) return;
-    const handleMouseMove = (e) => {
-      const deltaMs = (e.clientX - dragState.initialX) / dragState.pxPerMs;
-      const newDateStr = new Date(dragState.initialDateMs + deltaMs - new Date().getTimezoneOffset() * 60000).toISOString().split('T')[0];
-
-      setLocalSchedule(prev => {
-        const updated = { ...prev };
-        if (!updated[dragState.phaseName]) updated[dragState.phaseName] = {};
-        if (dragState.handleType === 'start') {
-          updated[dragState.phaseName].actualStart = newDateStr;
-          if (updated[dragState.phaseName].actualEnd && new Date(updated[dragState.phaseName].actualEnd) < new Date(newDateStr)) updated[dragState.phaseName].actualEnd = newDateStr;
-        } else {
-          updated[dragState.phaseName].actualEnd = newDateStr;
-          if (updated[dragState.phaseName].actualStart && new Date(updated[dragState.phaseName].actualStart) > new Date(newDateStr)) updated[dragState.phaseName].actualStart = newDateStr;
-        }
-        return updated;
-      });
-    };
-    const handleMouseUp = () => { setDragState(null); setTimeout(() => setLocalSchedule(c => { onSave({ ...safeTicket, schedule: c }); return c; }), 0); };
-
-    window.addEventListener('mousemove', handleMouseMove);
-    window.addEventListener('mouseup', handleMouseUp);
-    document.body.style.cursor = 'ew-resize';
-    return () => { window.removeEventListener('mousemove', handleMouseMove); window.removeEventListener('mouseup', handleMouseUp); document.body.style.cursor = 'default'; };
-  }, [dragState, safeTicket, onSave]);
-
-  return (
-    <div className="space-y-6 max-w-[1400px] mx-auto">
-      <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5 flex flex-col gap-4">
-        
-        <div className="flex flex-wrap items-center gap-4 border-b border-slate-100 pb-4">
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-semibold text-slate-500">Tipo:</span>
-            <select className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-white" value={filterType} onChange={(e) => setFilterType(e.target.value)}>
-              {types.map(t => <option key={t} value={t}>{t}</option>)}
-            </select>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-semibold text-slate-500">Key User:</span>
-            <select className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-white" value={filterKeyUser} onChange={(e) => setFilterKeyUser(e.target.value)}>
-              {keyUsers.map(k => <option key={k} value={k}>{k}</option>)}
-            </select>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-semibold text-slate-500">Sprint:</span>
-            <select className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-white" value={filterSprint} onChange={(e) => setFilterSprint(e.target.value)}>
-              {sprints.map(s => <option key={s} value={s}>{s}</option>)}
-            </select>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-semibold text-slate-500">Analista:</span>
-            <select className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-white" value={filterAnalyst} onChange={(e) => setFilterAnalyst(e.target.value)}>
-              {analysts.map(a => <option key={a} value={a}>{a}</option>)}
-            </select>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-semibold text-slate-500">Patrocinador:</span>
-            <select className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-white" value={filterSponsor} onChange={(e) => setFilterSponsor(e.target.value)}>
-              {sponsors.map(s => <option key={s} value={s}>{s}</option>)}
-            </select>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-3 w-full">
-          <div className="bg-blue-100 text-blue-600 p-2 rounded-lg"><Search size={20} /></div>
-          <select 
-            className="w-full text-lg font-semibold text-slate-800 bg-transparent outline-none cursor-pointer disabled:opacity-50" 
-            value={selectedId} 
-            onChange={(e) => setSelectedId(e.target.value)}
-            disabled={filteredTickets.length === 0}
-          >
-            {filteredTickets.map(t => <option key={t.id} value={t.id}>{t.id} - {t.description}</option>)}
-            {filteredTickets.length === 0 && <option value="">Nenhuma demanda encontrada para os filtros selecionados</option>}
-          </select>
-        </div>
-      </div>
-
-      {!safeTicket ? (
-        <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-10 text-center text-slate-500 font-medium flex flex-col items-center justify-center">
-          <Search size={48} className="text-slate-300 mb-4" />
-          Nenhuma demanda disponível para os filtros selecionados.
-        </div>
-      ) : (
-        <>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 xl:grid-cols-8 gap-4">
-            <div className="bg-white rounded-xl p-5 shadow-sm border border-slate-200 border-l-4" style={{borderLeftColor: STATUS_COLORS[safeTicket.status] || '#CBD5E1'}}><p className="text-xs text-slate-500 font-semibold uppercase mb-1">Status Atual</p><p className="font-bold text-slate-800 truncate" style={{color: STATUS_COLORS[safeTicket.status]}}>{safeTicket.status}</p></div>
-            <div className="bg-white rounded-xl p-5 shadow-sm border border-slate-200 border-l-4" style={{borderLeftColor: PRIORITY_COLORS[safeTicket.priority || 'Média']}}><p className="text-xs text-slate-500 font-semibold uppercase mb-1">Prioridade</p><p className="font-bold truncate" style={{color: PRIORITY_COLORS[safeTicket.priority || 'Média']}}>{safeTicket.priority || 'Média'}</p></div>
-            <div className="bg-white rounded-xl p-5 shadow-sm border border-slate-200"><p className="text-xs text-slate-500 font-semibold uppercase mb-1">Progresso</p><div className="flex items-center gap-2"><div className="w-full bg-slate-200 rounded-full h-2"><div className="h-2 rounded-full bg-blue-600" style={{ width: `${safeTicket.progress}%` }}></div></div><span className="text-sm font-bold text-slate-700">{safeTicket.progress}%</span></div></div>
-            <div className="bg-white rounded-xl p-5 shadow-sm border border-slate-200"><p className="text-xs text-slate-500 font-semibold uppercase mb-1">Sistema</p><p className="font-bold text-slate-800 flex items-center gap-2 truncate"><Database size={16} className="text-teal-500 shrink-0"/> {safeTicket.sistema || '-'}</p></div>
-            <div className="bg-white rounded-xl p-5 shadow-sm border border-slate-200"><p className="text-xs text-slate-500 font-semibold uppercase mb-1">Key User / Tipo</p><p className="font-bold text-slate-800 flex items-center gap-2 truncate"><User size={16} className="text-blue-500 shrink-0"/> {safeTicket.keyUser}</p></div>
-            <div className="bg-white rounded-xl p-5 shadow-sm border border-slate-200"><p className="text-xs text-slate-500 font-semibold uppercase mb-1">Analista (Resp.)</p><p className="font-bold text-slate-800 flex items-center gap-2"><UserCircle size={16} className="text-purple-500"/> {safeTicket.analyst}</p></div>
-            <div className="bg-white rounded-xl p-5 shadow-sm border border-slate-200"><p className="text-xs text-slate-500 font-semibold uppercase mb-1">Recursos (Equipe)</p><p className="font-bold text-slate-800 flex items-center gap-2 truncate" title={safeTicket.recursos?.length > 0 ? safeTicket.recursos.join(', ') : (safeTicket.recurso || '-')}><User size={16} className="text-emerald-500 shrink-0"/> {safeTicket.recursos?.length > 0 ? safeTicket.recursos.join(', ') : (safeTicket.recurso || '-')}</p></div>
-            <div className="bg-white rounded-xl p-5 shadow-sm border border-slate-200"><p className="text-xs text-slate-500 font-semibold uppercase mb-1">Patrocinador</p><p className="font-bold text-slate-800 flex items-center gap-2 truncate"><Shield size={16} className="text-indigo-500 shrink-0"/> {safeTicket.sponsor || '-'}</p></div>
-            <div className="bg-white rounded-xl p-5 shadow-sm border border-slate-200"><p className="text-xs text-slate-500 font-semibold uppercase mb-1">Sprint</p><p className="font-bold text-slate-800 flex items-center gap-2 truncate"><Tag size={16} className="text-orange-500 shrink-0"/> {safeTicket.sprint || 'Sem Sprint'}</p></div>
-          </div>
-
-          {safeTicket.tags && safeTicket.tags.length > 0 && (
-            <div className="flex flex-wrap items-center gap-2">
-              {safeTicket.tags.map((tag, i) => (
-                <span key={`${tag}-${i}`} className="inline-flex items-center gap-1 bg-blue-50 text-blue-700 border border-blue-200 text-xs font-semibold px-2.5 py-1 rounded-full"><Tag size={11}/>{tag}</span>
-              ))}
-            </div>
-          )}
-
-          {safeTicket.dependsOn && safeTicket.dependsOn.length > 0 && (
-            <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden flex flex-col">
-              <div className="p-4 border-b border-slate-200 bg-slate-50 flex items-center gap-2"><Link2 size={16} className="text-slate-500"/><h3 className="font-semibold text-slate-700 text-sm">Depende de</h3></div>
-              <div className="p-4 flex flex-wrap gap-2">
-                {safeTicket.dependsOn.map(depId => {
-                  const dep = tickets.find(t => t.id === depId);
-                  const isPending = !dep || dep.status !== '10 - Concluído';
-                  return (
-                    <span key={depId} className={`inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1.5 rounded-lg border ${isPending ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'}`}>
-                      {isPending ? <AlertTriangle size={12}/> : <CheckCircle2 size={12}/>}
-                      {depId}{dep ? ` — ${friendlyStatusLabel(dep.status)}` : ' (fora do seu escopo de visualização)'}
-                    </span>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden flex flex-col w-full" style={{ userSelect: dragState ? 'none' : 'auto' }}>
-            <div className="p-4 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
-              <h3 className="font-bold text-slate-700">Cronograma do Projeto</h3>
-            </div>
-            <div className="p-5 overflow-x-auto relative">
-              <div className="min-w-[900px]">
-                <div className="flex border-b border-slate-200 pb-2 mb-4 text-xs font-bold text-slate-400 uppercase">
-                  <div className="w-[20%]"></div>
-                  <div className="w-[80%] flex justify-between px-2">
-                    <div className="text-left whitespace-nowrap">{formatMonthYear(minDateMs)}</div>
-                    <div className="text-right whitespace-nowrap">{formatMonthYear(maxDateMs)}</div>
-                  </div>
-                </div>
-                <div className="relative">
-                  {ganttPhases.map((phase, i) => {
-                    let pLeftPos = 0, pWidthPos = 0, aLeftPos = 0, aWidthPos = 0;
-                    if (phase.plannedStartMs && phase.plannedEndMs) { pLeftPos = ((phase.plannedStartMs - minDateMs) / totalMs) * 100; pWidthPos = ((phase.plannedEndMs - phase.plannedStartMs) / totalMs) * 100; }
-                    if (phase.actualStartMs && phase.actualEndMs) { aLeftPos = ((phase.actualStartMs - minDateMs) / totalMs) * 100; aWidthPos = ((phase.actualEndMs - phase.actualStartMs) / totalMs) * 100; } 
-                    else if (phase.actualStartMs) { aLeftPos = ((phase.actualStartMs - minDateMs) / totalMs) * 100; aWidthPos = ((Math.min(new Date().getTime(), maxDateMs) - phase.actualStartMs) / totalMs) * 100; }
-                    return (
-                      <div key={i} className="flex items-center border-b border-slate-50 py-3 relative group">
-                        <div className="w-[20%] pr-4 z-10 bg-white"><span className="text-xs font-bold text-slate-700 truncate block">{phase.name}</span></div>
-                        <div className="w-[80%] relative flex flex-col justify-center gap-2 h-full pt-1 px-2" ref={i === 0 ? timelineRef : null}>
-                          
-                          {(phase.plannedStartMs && phase.plannedEndMs) ? (
-                            <div className="flex items-center" style={{ marginLeft: `calc(${pLeftPos}% - 0.5rem)` }}>
-                              <div className="h-6 rounded-md bg-slate-200 opacity-90 shrink-0" style={{ width: `${pWidthPos}%`, minWidth: '40px' }}></div>
-                              <span className="ml-2 text-[10px] font-bold text-slate-400 whitespace-nowrap">
-                                 {formatDateShort(phase.plannedStartMs)} a {formatDateShort(phase.plannedEndMs)}
-                              </span>
-                            </div>
-                          ) : <div className="h-6"></div>}
-                          
-                          {phase.actualStartMs ? (
-                            <div className="flex items-center" style={{ marginLeft: `calc(${aLeftPos}% - 0.5rem)` }}>
-                              <div className={`h-8 rounded-md shadow-sm border relative ${dragState?.phaseName === phase.name ? 'ring-2 ring-blue-400' : 'border-slate-300'} bg-slate-100`} style={{ width: `${aWidthPos}%`, minWidth: '70px' }}>
-                                <div className={`absolute top-0 left-0 h-full ${phase.progress === 100 ? 'bg-emerald-500' : (phase.progress > 0 ? 'bg-blue-500' : 'bg-slate-300')}`} style={{ width: `${phase.progress}%`, minWidth: '2px' }}></div>
-                                <div className="absolute top-0 left-0 bottom-0 w-3 cursor-ew-resize bg-black/0 hover:bg-black/10 transition-colors rounded-l-md z-10" onMouseDown={(e) => startDrag(e, phase.name, 'start')}></div>
-                                {phase.actualEndMs && <div className="absolute top-0 right-0 bottom-0 w-3 cursor-ew-resize bg-black/0 hover:bg-black/10 transition-colors rounded-r-md z-10" onMouseDown={(e) => startDrag(e, phase.name, 'end')}></div>}
-                              </div>
-                              <div className="ml-2 flex items-center gap-1.5 pointer-events-none whitespace-nowrap">
-                                 <span className="text-[11px] font-black text-slate-700">{phase.progress}%</span>
-                                 <span className="text-[10px] font-bold text-slate-500 flex items-center gap-1">
-                                    <span className="w-1 h-1 rounded-full bg-slate-400"></span>
-                                    {formatDateShort(phase.actualStartMs)} {phase.actualEndMs ? `a ${formatDateShort(phase.actualEndMs)}` : ''}
-                                 </span>
-                              </div>
-                            </div>
-                          ) : <div className="h-8"></div>}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
-            <div className="flex flex-col gap-6">
-              <div className="bg-gradient-to-br from-indigo-50 to-purple-50 rounded-xl shadow-sm border border-indigo-100 overflow-hidden flex flex-col">
-                <div className="p-4 border-b border-indigo-100/50 flex justify-between items-center">
-                  <h3 className="font-bold text-indigo-900">Resumo Executivo (IA)</h3>
-                  {aiSummary && !isGeneratingSummary && (
-                    <button onClick={() => handleGenerateAISummary(safeTicket)} title="Gerar um novo resumo com o histórico atual" className="text-indigo-600 hover:text-indigo-800 p-1 rounded transition-colors"><RefreshCcw size={14} /></button>
-                  )}
-                </div>
-                <div className="p-5 flex flex-col gap-4">
-                  {!isGeneratingSummary ? (aiSummary ? <div className="text-[14px] text-slate-800 whitespace-pre-wrap">{aiSummary}</div> : <button onClick={() => handleGenerateAISummary(safeTicket)} className="bg-indigo-600 text-white px-5 py-2 rounded-lg text-sm font-bold flex justify-center gap-2 mx-auto"><Sparkles size={16} /> Gerar Resumo Inteligente</button>) : <div className="flex justify-center py-4"><Loader2 className="animate-spin text-indigo-600" /></div>}
-                </div>
-              </div>
-              
-              <div className="bg-gradient-to-br from-teal-50 to-emerald-50 rounded-xl shadow-sm border border-teal-100 overflow-hidden flex flex-col">
-                <div className="p-4 border-b border-teal-100/50 flex justify-between items-center">
-                  <h3 className="font-bold text-teal-900">Próximos Passos (IA)</h3>
-                  {aiNextSteps && !isGeneratingNextSteps && (
-                    <button onClick={() => handleGenerateNextSteps(safeTicket)} title="Gerar novas sugestões com o histórico atual" className="text-teal-600 hover:text-teal-800 p-1 rounded transition-colors"><RefreshCcw size={14} /></button>
-                  )}
-                </div>
-                <div className="p-5 flex flex-col gap-4">
-                  {!isGeneratingNextSteps ? (aiNextSteps ? <div className="text-[14px] text-slate-800 whitespace-pre-wrap">{aiNextSteps}</div> : <button onClick={() => handleGenerateNextSteps(safeTicket)} className="bg-teal-600 text-white px-5 py-2 rounded-lg text-sm font-bold flex justify-center gap-2 mx-auto"><Sparkles size={16} /> ✨ Sugerir Próximos Passos</button>) : <div className="flex justify-center py-4"><Loader2 className="animate-spin text-teal-600" /></div>}
-                </div>
-              </div>
-
-              <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden flex flex-col">
-                <div className="p-4 border-b border-slate-200 bg-slate-50 flex items-center gap-2"><Clock size={18} className="text-slate-500" /><h3 className="font-semibold text-slate-700">Tempo por Status</h3></div>
-                <div className="p-5">
-                  <div className="flex flex-wrap gap-4">
-                    {ticketHistory.map((h, i) => (
-                      <div key={i} className="flex items-center gap-3 bg-slate-50 border border-slate-200 rounded-lg p-3 flex-1 min-w-[180px]">
-                        <div className="w-2 h-full min-h-[30px] rounded-full" style={{ backgroundColor: STATUS_COLORS[h.status] || '#ccc' }}></div>
-                        <div className="flex-1 overflow-hidden"><p className="text-xs font-bold text-slate-700 truncate">{h.status}</p><p className="text-[10px] text-slate-500">{h.date}</p></div>
-                        <div className="text-right pl-2 border-l border-slate-200"><p className="text-xl font-black text-slate-700">{calculateDays(h.date, ticketHistory[i + 1]?.date)}</p></div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            </div>
-            <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden flex flex-col h-[600px]">
-              <div className="p-4 border-b border-slate-200 bg-slate-50 flex items-center justify-between"><div className="flex items-center gap-2"><CalendarDays size={18} className="text-slate-500" /><h3 className="font-semibold text-slate-700">Diário de Bordo</h3></div></div>
-              <div className="p-5 flex-1 overflow-y-auto space-y-4">
-                {sortedLogsDesc.length === 0 ? <p className="text-slate-400 text-center mt-10">Nenhum registo.</p> : sortedLogsDesc.map((log, i) => (
-                  <div key={log.id || i} className="bg-slate-50 border border-slate-100 rounded-lg p-3"><div className="flex justify-between items-start mb-1"><span className="text-xs font-bold text-slate-700">{log.date}</span><span className="text-[10px] text-slate-500">{log.author}</span></div><p className="text-sm text-slate-600 whitespace-pre-wrap">{log.text}</p></div>
-                ))}
-              </div>
-            </div>
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
-
 function PdfReportView({ tickets, showToast }) {
   const [filterType, setFilterType] = useState(['Todos']);
   const [filterKeyUser, setFilterKeyUser] = useState(['Todos']);
   const [filterSprint, setFilterSprint] = useState(['Todos']);
   const [filterStatus, setFilterStatus] = useState(['Todos']);
   const [filterSponsor, setFilterSponsor] = useState(['Todos']);
-  
+  const [filterTicket, setFilterTicket] = useState(['Todos']);
+
   const types = [...new Set(tickets.map(t => t.type || 'Não Definido'))].sort();
   const keyUsers = [...new Set(tickets.map(t => t.keyUser).filter(Boolean))].sort();
   const sprints = [...new Set(tickets.map(t => t.sprint || 'Sem Sprint'))].sort();
   const sponsorsList = [...new Set(tickets.map(t => t.sponsor || 'Não Definido'))].sort();
   const statuses = [...STATUS_OPTIONS];
+  const ticketIds = [...tickets.map(t => t.id)].sort();
+
+  const hasPdfFiltersActive = !filterType.includes('Todos') || !filterKeyUser.includes('Todos') || !filterSprint.includes('Todos')
+    || !filterStatus.includes('Todos') || !filterSponsor.includes('Todos') || !filterTicket.includes('Todos');
+  const clearPdfFilters = () => {
+    setFilterType(['Todos']);
+    setFilterKeyUser(['Todos']);
+    setFilterSprint(['Todos']);
+    setFilterStatus(['Todos']);
+    setFilterSponsor(['Todos']);
+    setFilterTicket(['Todos']);
+  };
 
   const filteredTickets = useMemo(() => {
     return tickets.filter(t => {
@@ -3754,9 +3406,10 @@ function PdfReportView({ tickets, showToast }) {
       const matchSp = filterSprint.includes('Todos') || filterSprint.includes(t.sprint || 'Sem Sprint');
       const matchSt = filterStatus.includes('Todos') || filterStatus.includes(t.status);
       const matchSpn = filterSponsor.includes('Todos') || filterSponsor.includes(t.sponsor || 'Não Definido');
-      return matchTyp && matchKU && matchSp && matchSt && matchSpn;
+      const matchTi = filterTicket.includes('Todos') || filterTicket.includes(t.id);
+      return matchTyp && matchKU && matchSp && matchSt && matchSpn && matchTi;
     });
-  }, [tickets, filterType, filterKeyUser, filterSprint, filterStatus, filterSponsor]);
+  }, [tickets, filterType, filterKeyUser, filterSprint, filterStatus, filterSponsor, filterTicket]);
 
   const handlePrint = () => {
     window.print();
@@ -3857,13 +3510,27 @@ function PdfReportView({ tickets, showToast }) {
   return (
     <div className="space-y-6 max-w-6xl mx-auto print:max-w-none">
       <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 print:hidden">
-        <h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><Printer className="text-blue-600" /> Relatório Consolidado para PDF</h3>
-        <div className="bg-slate-50 border border-slate-200 rounded-lg p-5 grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-6">
-          <MultiSelectFilter label="Tipo" options={types} selected={filterType} onChange={setFilterType} />
-          <MultiSelectFilter label="Key User" options={keyUsers} selected={filterKeyUser} onChange={setFilterKeyUser} />
-          <MultiSelectFilter label="Sprint" options={sprints} selected={filterSprint} onChange={setFilterSprint} />
-          <MultiSelectFilter label="Status" options={statuses} selected={filterStatus} onChange={setFilterStatus} />
-          <MultiSelectFilter label="Patrocinador" options={sponsorsList} selected={filterSponsor} onChange={setFilterSponsor} />
+        <h3 className="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2"><Printer className="text-blue-600" /> Relatório Consolidado para PDF</h3>
+        <div className="bg-slate-50 border border-slate-200 rounded-xl p-5">
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-1.5 text-slate-400">
+              <Filter size={14} />
+              <span className="text-[10px] font-bold uppercase tracking-wider">Filtros</span>
+            </div>
+            {hasPdfFiltersActive && (
+              <button onClick={clearPdfFilters} className="text-xs font-semibold text-slate-400 hover:text-slate-700 transition-colors flex items-center gap-1">
+                <X size={13} /> Limpar filtros
+              </button>
+            )}
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-6">
+            <MultiSelectFilter label="Demanda" options={ticketIds} selected={filterTicket} onChange={setFilterTicket} />
+            <MultiSelectFilter label="Tipo" options={types} selected={filterType} onChange={setFilterType} />
+            <MultiSelectFilter label="Key User" options={keyUsers} selected={filterKeyUser} onChange={setFilterKeyUser} />
+            <MultiSelectFilter label="Sprint" options={sprints} selected={filterSprint} onChange={setFilterSprint} />
+            <MultiSelectFilter label="Status" options={statuses} selected={filterStatus} onChange={setFilterStatus} />
+            <MultiSelectFilter label="Patrocinador" options={sponsorsList} selected={filterSponsor} onChange={setFilterSponsor} />
+          </div>
         </div>
         <div className="mt-6 flex flex-col md:flex-row md:items-center justify-between border-t border-slate-200 pt-6 gap-4">
           <span className="bg-blue-100 text-blue-800 font-bold px-4 py-2 rounded-lg text-sm inline-block w-max">{filteredTickets.length} Demanda(s) Selecionada(s)</span>
@@ -4153,7 +3820,7 @@ function KanbanView({ tickets, onSelect, onStatusChange }) {
   );
 }
 
-function TicketModal({ ticket, tickets = [], projects = [], demandTypes = [], systems = [], onClose, onSave, isNew, appUsers, systemUser, sponsors = [] }) {
+function TicketModal({ ticket, tickets = [], projects = [], demandTypes = [], systems = [], onClose, onSave, isNew, appUsers, systemUser, sponsors = [], showToast }) {
   const [formData, setFormData] = useState({
     ...ticket,
     recursos: ticket.recursos || (ticket.recurso ? [ticket.recurso] : []),
@@ -4266,6 +3933,12 @@ function TicketModal({ ticket, tickets = [], projects = [], demandTypes = [], sy
       const result = await callClaudeWithRetry(prompt);
       setFormData(prev => ({ ...prev, scope: result }));
     } catch (e) {
+      // Antes esse erro só ia pro console — o botão parava de girar e nada
+      // mais acontecia, parecendo que a IA "não fez nada". Agora mostra o
+      // motivo real (chave ausente, function não publicada, erro da
+      // Anthropic, etc.) direto pro usuário.
+      const detail = e instanceof Error ? e.message : String(e);
+      if (showToast) showToast(`Erro ao melhorar escopo com IA: ${detail}`, "error");
       console.error("Erro ao melhorar escopo:", e);
     } finally {
       setIsEnhancingScope(false);
