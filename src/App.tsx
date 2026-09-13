@@ -976,8 +976,8 @@ export default function App() {
     const isKeyUser = systemUser.roles.includes('Key User');
     
     return tickets.filter(t => {
-      const asAnalyst = isAnalyst && (t.analyst === systemUser.name || (t.analyst || '').includes(systemUser.name));
-      const asKeyUser = isKeyUser && (t.keyUser === systemUser.name || (t.keyUser || '').includes(systemUser.name));
+      const asAnalyst = isAnalyst && t.analyst === systemUser.name;
+      const asKeyUser = isKeyUser && t.keyUser === systemUser.name;
       return asAnalyst || asKeyUser;
     });
   }, [tickets, systemUser]);
@@ -1766,7 +1766,7 @@ function UserManagementSection({ appUsers, onSaveAppUser, onDeleteAppUser }) {
                {isNewUser && (
                  <>
                    <div><label className="block text-xs font-bold text-slate-500 uppercase mb-1">E-mail (Para Login)</label><input type="email" value={editingUser.email} onChange={e=>setEditingUser({...editingUser, email: e.target.value})} className="w-full border border-slate-300 rounded-lg p-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500" placeholder="joao.silva@empresa.com" /></div>
-                   <div><label className="block text-xs font-bold text-slate-500 uppercase mb-1">Senha Inicial</label><input type="text" value={editingUser.password} onChange={e=>setEditingUser({...editingUser, password: e.target.value})} className="w-full border border-slate-300 rounded-lg p-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500" placeholder="Mínimo 6 caracteres..." /></div>
+                   <div><label className="block text-xs font-bold text-slate-500 uppercase mb-1">Senha Inicial</label><input type="password" autoComplete="new-password" value={editingUser.password} onChange={e=>setEditingUser({...editingUser, password: e.target.value})} className="w-full border border-slate-300 rounded-lg p-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500" placeholder="Mínimo 6 caracteres..." /></div>
                  </>
                )}
                <div>
