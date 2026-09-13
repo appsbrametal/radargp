@@ -27,6 +27,11 @@ import { adminCreateUser, adminDeleteUser } from './lib/adminUsers';
 import html2canvas from 'html2canvas-pro';
 import { jsPDF } from 'jspdf';
 
+// Fonte única do número de versão exibido no app (sidebar e tela de login
+// mostravam números diferentes antes — v3.0.0 vs v0.2.2 — porque cada tela
+// tinha o texto digitado à mão).
+const APP_VERSION = '3.1.0';
+
 const initialDemandTypes = [
   { id: 'TYPE-1', name: 'Melhorias' },
   { id: 'TYPE-2', name: 'Projeto Estruturante' },
@@ -44,6 +49,34 @@ const initialSponsors = [
   { id: 'SPO-1', name: 'Diretoria Executiva', email: 'diretoria@empresa.com' },
   { id: 'SPO-2', name: 'Gerência de TI', email: 'ti@empresa.com' }
 ];
+
+// Sprints eram uma lista fixa (SPRINT_OPTIONS, só até 12/26) escrita direto
+// no componente da lista de demandas. Viraram uma coleção gerenciável pela
+// tela de Configurações, igual a Tipos de Demanda/Sistemas/Patrocinadores —
+// isso é só a carga inicial (seed), usada uma única vez se a coleção estiver
+// vazia no banco.
+const initialSprints = [
+  'Sprint 04/26', 'Sprint 05/26', 'Sprint 06/26', 'Sprint 07/26',
+  'Sprint 08/26', 'Sprint 09/26', 'Sprint 10/26', 'Sprint 11/26', 'Sprint 12/26'
+].map((name, i) => ({ id: `SPRINT-${i}`, name }));
+
+// Ordena rótulos de sprint no formato "Sprint MM/AA" cronologicamente. Um
+// simples .localeCompare() (usado nas outras listas de configuração) quebra
+// na virada de ano: "Sprint 01/27" viria alfabeticamente antes de "Sprint
+// 12/26". Rótulos fora desse padrão (nomes customizados) vão para o fim, em
+// ordem alfabética entre si.
+function compareSprintLabels(a, b) {
+  const parse = (s) => {
+    const m = /^Sprint\s+(\d{2})\/(\d{2})$/.exec(s || '');
+    return m ? parseInt(m[2], 10) * 100 + parseInt(m[1], 10) : null;
+  };
+  const pa = parse(a);
+  const pb = parse(b);
+  if (pa !== null && pb !== null) return pa - pb;
+  if (pa !== null) return -1;
+  if (pb !== null) return 1;
+  return (a || '').localeCompare(b || '');
+}
 
 const AREAS_SOLICITANTES = [
   'Almoxarifado', 'Assistência Técnica', 'Comercial', 'Contabilidade', 
@@ -124,6 +157,16 @@ const STATUS_COLORS = {
 };
 
 const STATUS_OPTIONS = Object.keys(STATUS_COLORS);
+
+// Prioridade da demanda — campo novo, opcional (tickets antigos não têm essa
+// chave; tratamos ausência como 'Média' onde faz sentido exibir um valor).
+const PRIORITY_COLORS = {
+  'Baixa': '#64748B',
+  'Média': '#3B82F6',
+  'Alta': '#F59E0B',
+  'Crítica': '#EF4444',
+};
+const PRIORITY_OPTIONS = Object.keys(PRIORITY_COLORS);
 
 const SCHEDULE_STEPS = [
   'Validação de Escopo',
@@ -256,6 +299,47 @@ const isTicketOverdue = (t, now = Date.now()) => {
 // exibição em legendas e rótulos — a numeração existe para ordenar as colunas
 // no banco, não é algo que o usuário final precise ler.
 const friendlyStatusLabel = (status) => (status || '').replace(/^\d+\s*-\s*/, '');
+
+// --- EXPORTAÇÃO DE CSV (lista filtrada, na Lista de Demandas) ---
+// Complementa o backup JSON completo (DataExportView): aqui é só a lista já
+// filtrada/ordenada na tela, pronta para abrir no Excel/Planilhas Google.
+function csvEscape(value) {
+  const s = value === null || value === undefined ? '' : String(value);
+  if (/[",;\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
+}
+
+function ticketsToCsv(tickets) {
+  const headers = ['ID', 'Descrição', 'Tipo', 'Prioridade', 'Sistema', 'Patrocinador', 'Key User', 'Analista', 'Sprint', 'Status', 'Progresso (%)', 'Go-Live', 'Tags'];
+  const rows = tickets.map(t => [
+    t.id,
+    t.description,
+    t.type || '',
+    t.priority || 'Média',
+    t.sistema || '',
+    t.sponsor || '',
+    t.keyUser || '',
+    t.analyst || '',
+    t.sprint || '',
+    friendlyStatusLabel(t.status),
+    t.progress ?? '',
+    t.goLive || '',
+    (t.tags || []).join('; '),
+  ]);
+  // ﻿ (BOM) na frente: sem isso, o Excel no Windows abre acentos
+  // (ç, ã, é...) corrompidos ao dar duplo-clique num CSV em UTF-8.
+  return '﻿' + [headers, ...rows].map(row => row.map(csvEscape).join(',')).join('\r\n');
+}
+
+function downloadTextFile(filename, content, mimeType) {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
 
 // --- COMPONENTES REUTILIZÁVEIS ---
 function RadarLogo({ className = '', compact = false }) {
@@ -424,7 +508,8 @@ export default function App() {
   const [demandTypes, setDemandTypes] = useState<any[]>([]); 
   const [systems, setSystems] = useState<any[]>([]); 
   const [appUsers, setAppUsers] = useState<any[]>([]); 
-  const [sponsors, setSponsors] = useState<any[]>([]); 
+  const [sponsors, setSponsors] = useState<any[]>([]);
+  const [sprints, setSprints] = useState<any[]>([]);
   const [accessLogs, setAccessLogs] = useState<any[]>([]);
   const [presence, setPresence] = useState<any[]>([]);
   
@@ -682,6 +767,18 @@ export default function App() {
       setSponsors(fetchedSponsors);
     }, (error) => console.error("Erro ao carregar patrocinadores:", error));
 
+    // SPRINTS
+    const sprintsRef = collection(db, 'artifacts', appId, 'public', 'data', 'sprints');
+    const unsubscribeSprints = onSnapshot(sprintsRef, async (snapshot) => {
+      if (snapshot.empty) {
+        for (const s of initialSprints) { await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'sprints', s.id), s); }
+        return;
+      }
+      const fetchedSprints = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id }));
+      fetchedSprints.sort((a, b) => compareSprintLabels(a.name, b.name));
+      setSprints(fetchedSprints);
+    }, (error) => console.error("Erro ao carregar sprints:", error));
+
     // PRESENCE (Usuários Online)
     const presenceRef = collection(db, 'artifacts', appId, 'public', 'data', 'presence');
     const unsubscribePresence = onSnapshot(presenceRef, (snapshot) => {
@@ -707,6 +804,7 @@ export default function App() {
       unsubscribeSponsors();
       unsubscribePresence();
       unsubscribeAccessLogs();
+      unsubscribeSprints();
     };
   }, [systemUser, appId]);
 
@@ -743,6 +841,21 @@ export default function App() {
     if (!systemUser) return;
     try { await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'systems', systemId)); showToast("Sistema removido.", "success"); } 
     catch (e) { showToast("Erro ao remover sistema.", "error"); }
+  };
+
+  const handleSaveSprint = async (sprintName) => {
+    if (!systemUser || !sprintName.trim()) return;
+    try {
+      const newId = `SPRINT-${Date.now()}`;
+      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'sprints', newId), { name: sprintName.trim() });
+      showToast("Sprint adicionada com sucesso!");
+    } catch (e) { showToast("Erro ao adicionar sprint.", "error"); }
+  };
+
+  const handleDeleteSprint = async (sprintId) => {
+    if (!systemUser) return;
+    try { await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'sprints', sprintId)); showToast("Sprint removida.", "success"); }
+    catch (e) { showToast("Erro ao remover sprint.", "error"); }
   };
 
   const handleSaveSponsor = async (sponsorData) => {
@@ -872,6 +985,12 @@ export default function App() {
     reader.onload = async (e) => {
       try {
         const importedData = JSON.parse(e.target.result);
+
+        const confirmed = window.confirm(
+          "Importar este backup vai SOBRESCREVER (por id) os dados atuais de demandas, projetos, tipos e patrocinadores com o conteúdo do arquivo selecionado. Essa ação não pode ser desfeita pelo app. Deseja continuar?"
+        );
+        if (!confirmed) { event.target.value = null; return; }
+
         setIsLoading(true);
 
         if (Array.isArray(importedData)) {
@@ -1022,7 +1141,7 @@ export default function App() {
             {!sidebarCollapsed && (
               <div className="flex items-center justify-between mt-6">
                 <p className="text-[10px] text-slate-400 flex items-center gap-1"><Sparkles size={12} className="text-yellow-400"/> AI Powered</p>
-                <span className="text-[10px] font-mono text-slate-500 bg-slate-800/50 px-2 py-0.5 rounded-full border border-slate-700/50 cursor-default" title="Versão 3.0.0">v3.0.0</span>
+                <span className="text-[10px] font-mono text-slate-500 bg-slate-800/50 px-2 py-0.5 rounded-full border border-slate-700/50 cursor-default" title={`Versão ${APP_VERSION}`}>{`v${APP_VERSION}`}</span>
               </div>
             )}
           </div>
@@ -1095,13 +1214,13 @@ export default function App() {
           {activeTab === 'projects' && <ProjectsView projects={projects} tickets={accessibleTickets} onSaveProject={handleSaveProject} onDeleteProject={handleDeleteProject} onSelectTicket={(t) => { setSelectedTicket(t); setIsNewTicket(false); }} systemUser={systemUser} />}
           {activeTab === 'roadmap' && <RoadmapView tickets={accessibleTickets} sponsors={sponsors} systems={systems} onSelect={setSelectedTicket} />}
           {activeTab === 'kanban' && <KanbanView tickets={accessibleTickets} onSelect={setSelectedTicket} onStatusChange={handleUpdateTicketStatus} />}
-          {activeTab === 'list' && <TicketList tickets={accessibleTickets} onSelect={setSelectedTicket} onDeleteClick={setTicketToDelete} onUpdateSprint={handleUpdateSprint} filterStatus={listFilterStatus} setFilterStatus={setListFilterStatus} demandTypes={demandTypes} systems={systems} sponsors={sponsors} />}
+          {activeTab === 'list' && <TicketList tickets={accessibleTickets} onSelect={setSelectedTicket} onDeleteClick={setTicketToDelete} onUpdateSprint={handleUpdateSprint} filterStatus={listFilterStatus} setFilterStatus={setListFilterStatus} demandTypes={demandTypes} systems={systems} sponsors={sponsors} sprints={sprints} />}
           {activeTab === 'statusreport' && <StatusReportView tickets={accessibleTickets} onSelect={setSelectedTicket} reports={reports} onSaveReport={handleSaveReport} onDeleteReport={handleDeleteReport} />}
           {activeTab === 'onepage' && <OnePageView tickets={accessibleTickets} onSave={handleSaveTicket} systemUser={systemUser} />}
           {activeTab === 'pdfexport' && <PdfReportView tickets={accessibleTickets} showToast={showToast} />}
           {activeTab === 'export' && <DataExportView tickets={accessibleTickets} projects={projects} demandTypes={demandTypes} systems={systems} appUsers={appUsers} sponsors={sponsors} onImportJSON={handleImportJSON} />}
           {activeTab === 'accesslogs' && <AccessLogsView accessLogs={accessLogs} presence={presence} />}
-          {activeTab === 'settings' && <SettingsView demandTypes={demandTypes} onAdd={handleSaveDemandType} onDelete={handleDeleteDemandType} systems={systems} onAddSystem={handleSaveSystem} onDeleteSystem={handleDeleteSystem} appUsers={appUsers} onSaveAppUser={handleSaveAppUser} onDeleteAppUser={handleDeleteAppUser} sponsors={sponsors} onSaveSponsor={handleSaveSponsor} onDeleteSponsor={handleDeleteSponsor} />}
+          {activeTab === 'settings' && <SettingsView demandTypes={demandTypes} onAdd={handleSaveDemandType} onDelete={handleDeleteDemandType} systems={systems} onAddSystem={handleSaveSystem} onDeleteSystem={handleDeleteSystem} appUsers={appUsers} onSaveAppUser={handleSaveAppUser} onDeleteAppUser={handleDeleteAppUser} sponsors={sponsors} onSaveSponsor={handleSaveSponsor} onDeleteSponsor={handleDeleteSponsor} sprints={sprints} onAddSprint={handleSaveSprint} onDeleteSprint={handleDeleteSprint} />}
         </div>
       </main>
 
@@ -1225,7 +1344,7 @@ function LoginScreen({ onLogin }) {
           </form>
           <div className="mt-8 pt-6 border-t border-slate-100 text-center">
              <p className="text-xs text-slate-400 font-medium">Ambiente Seguro e Monitorizado</p>
-             <p className="text-[10px] text-slate-400 mt-1 font-bold uppercase tracking-wider">Versão v0.2.2</p>
+             <p className="text-[10px] text-slate-400 mt-1 font-bold uppercase tracking-wider">{`Versão v${APP_VERSION}`}</p>
           </div>
         </div>
       </div>
@@ -1827,7 +1946,7 @@ function SponsorConfigSection({ items, onSave, onDelete }) {
   );
 }
 
-function SettingsView({ demandTypes, onAdd, onDelete, systems, onAddSystem, onDeleteSystem, appUsers, onSaveAppUser, onDeleteAppUser, sponsors, onSaveSponsor, onDeleteSponsor }) {
+function SettingsView({ demandTypes, onAdd, onDelete, systems, onAddSystem, onDeleteSystem, appUsers, onSaveAppUser, onDeleteAppUser, sponsors, onSaveSponsor, onDeleteSponsor, sprints, onAddSprint, onDeleteSprint }) {
   const [activeSettingsTab, setActiveSettingsTab] = useState('listas');
 
   return (
@@ -1841,6 +1960,7 @@ function SettingsView({ demandTypes, onAdd, onDelete, systems, onAddSystem, onDe
          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <ConfigSection title="Tipos de Demanda" description="Categorias disponíveis ao criar ou editar uma demanda." items={demandTypes} onAddItem={onAdd} onDeleteItem={onDelete} placeholder="Ex: Melhoria Técnica, Urgente, etc..." />
             <ConfigSection title="Sistemas" description="Sistemas, aplicações ou plataformas disponíveis no portfólio." items={systems} onAddItem={onAddSystem} onDeleteItem={onDeleteSystem} placeholder="Ex: SAP, Jira, TOTVS..." />
+            <ConfigSection title="Sprints" description="Sprints disponíveis para atribuir às demandas na Lista de Demandas." items={sprints} onAddItem={onAddSprint} onDeleteItem={onDeleteSprint} placeholder="Ex: Sprint 01/27..." />
             <SponsorConfigSection items={sponsors} onSave={onSaveSponsor} onDelete={onDeleteSponsor} />
          </div>
        ) : (
@@ -2700,7 +2820,7 @@ function StatusReportView({ tickets, onSelect, reports = [], onSaveReport, onDel
   );
 }
 
-function TicketList({ tickets, onSelect, onDeleteClick, onUpdateSprint, filterStatus, setFilterStatus, demandTypes = [], systems = [], sponsors = [] }) {
+function TicketList({ tickets, onSelect, onDeleteClick, onUpdateSprint, filterStatus, setFilterStatus, demandTypes = [], systems = [], sponsors = [], sprints = [] }) {
   const [searchTerm, setSearchTerm] = useState('');
   const [filterAnalyst, setFilterAnalyst] = useState('Todos');
   const [filterKeyUser, setFilterKeyUser] = useState('Todos');
@@ -2708,13 +2828,19 @@ function TicketList({ tickets, onSelect, onDeleteClick, onUpdateSprint, filterSt
   const [filterType, setFilterType] = useState('Todos');
   const [filterSistema, setFilterSistema] = useState('Todos');
   const [filterSponsor, setFilterSponsor] = useState('Todos');
+  const [filterPriority, setFilterPriority] = useState('Todas');
   const [sortConfig, setSortConfig] = useState({ key: 'id', direction: 'desc' });
 
-  const SPRINT_OPTIONS = ['Sprint 04/26', 'Sprint 05/26', 'Sprint 06/26', 'Sprint 07/26', 'Sprint 08/26', 'Sprint 09/26', 'Sprint 10/26', 'Sprint 11/26', 'Sprint 12/26'];
+  // Antes era uma lista fixa até "Sprint 12/26"; agora vem da coleção
+  // "sprints", gerenciável em Configurações (com fallback caso a coleção
+  // ainda não tenha carregado).
+  const SPRINT_OPTIONS = sprints.length > 0
+    ? [...sprints.map(s => s.name)].sort(compareSprintLabels)
+    : ['Sprint 04/26', 'Sprint 05/26', 'Sprint 06/26', 'Sprint 07/26', 'Sprint 08/26', 'Sprint 09/26', 'Sprint 10/26', 'Sprint 11/26', 'Sprint 12/26'];
   const analysts = ['Todos', ...new Set(tickets.map(t => t.analyst))];
   const keyUsers = ['Todos', ...new Set(tickets.map(t => t.keyUser).filter(Boolean))].sort();
-  const sprints = ['Todas', ...new Set(tickets.map(t => t.sprint).filter(Boolean))].sort();
-  
+  const sprintFilterOptions = ['Todas', ...new Set(tickets.map(t => t.sprint).filter(Boolean))].sort();
+
   const dynamicTypes = demandTypes.length > 0 ? demandTypes.map(t => t.name) : [];
   const existingTypes = tickets.map(t => t.type || 'Não Definido');
   const types = ['Todos', ...new Set([...dynamicTypes, ...existingTypes])].sort();
@@ -2740,17 +2866,19 @@ function TicketList({ tickets, onSelect, onDeleteClick, onUpdateSprint, filterSt
 
   const filteredAndSortedTickets = useMemo(() => {
     let result = tickets.filter(t => {
-      const matchesSearch = t.id.toLowerCase().includes(searchTerm.toLowerCase()) || t.description.toLowerCase().includes(searchTerm.toLowerCase()) || (t.keyUser || '').toLowerCase().includes(searchTerm.toLowerCase());
+      const term = searchTerm.toLowerCase();
+      const matchesSearch = !term || t.id.toLowerCase().includes(term) || t.description.toLowerCase().includes(term) || (t.keyUser || '').toLowerCase().includes(term) || (t.tags || []).some(tag => tag.toLowerCase().includes(term));
       const matchesAnalyst = filterAnalyst === 'Todos' || t.analyst === filterAnalyst;
       const matchesKeyUser = filterKeyUser === 'Todos' || t.keyUser === filterKeyUser;
       const matchesSprint = filterSprint === 'Todas' || t.sprint === filterSprint;
       const matchesType = filterType === 'Todos' || (t.type || 'Não Definido') === filterType;
       const matchesSistema = filterSistema === 'Todos' || (t.sistema || 'Não Definido') === filterSistema;
       const matchesSponsor = filterSponsor === 'Todos' || (t.sponsor || 'Não Definido') === filterSponsor;
+      const matchesPriority = filterPriority === 'Todas' || (t.priority || 'Média') === filterPriority;
       const matchesStatus = filterStatus === 'Todos' ? true :
                             filterStatus === 'Em Andamento' ? (t.status !== '10 - Concluído' && t.status !== '00 - Cancelado' && t.status !== '00 - Paralisado' && t.status !== '00 - Bloqueado') :
                             t.status === filterStatus;
-      return matchesSearch && matchesAnalyst && matchesKeyUser && matchesSprint && matchesType && matchesSistema && matchesStatus && matchesSponsor;
+      return matchesSearch && matchesAnalyst && matchesKeyUser && matchesSprint && matchesType && matchesSistema && matchesStatus && matchesSponsor && matchesPriority;
     });
 
     result.sort((a, b) => {
@@ -2759,20 +2887,25 @@ function TicketList({ tickets, onSelect, onDeleteClick, onUpdateSprint, filterSt
       if (sortConfig.key === 'id') {
         aValue = parseInt(aValue.replace(/\D/g, '')) || 0;
         bValue = parseInt(bValue.replace(/\D/g, '')) || 0;
+      } else if (sortConfig.key === 'priority') {
+        // Ordena por severidade real (Baixa < Média < Alta < Crítica), não
+        // alfabeticamente — senão "Alta" viria antes de "Baixa".
+        aValue = PRIORITY_OPTIONS.indexOf(a.priority || 'Média');
+        bValue = PRIORITY_OPTIONS.indexOf(b.priority || 'Média');
       }
       if (aValue < bValue) return sortConfig.direction === 'asc' ? -1 : 1;
       if (aValue > bValue) return sortConfig.direction === 'asc' ? 1 : -1;
       return 0;
     });
     return result;
-  }, [tickets, searchTerm, filterAnalyst, filterKeyUser, filterSprint, filterType, sortConfig, filterStatus, filterSistema, filterSponsor]);
+  }, [tickets, searchTerm, filterAnalyst, filterKeyUser, filterSprint, filterType, sortConfig, filterStatus, filterSistema, filterSponsor, filterPriority]);
 
   return (
     <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden flex flex-col h-full">
       <div className="p-4 border-b border-slate-200 flex flex-col lg:flex-row gap-4 justify-between bg-slate-50 flex-wrap">
         <div className="relative w-full lg:w-80 shrink-0">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
-          <input type="text" placeholder="Pesquisar ID ou Descrição..." className="w-full pl-10 pr-4 py-2 rounded-lg border border-slate-300 outline-none focus:ring-2 focus:ring-blue-500" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
+          <input type="text" placeholder="Pesquisar ID, Descrição ou Tag..." className="w-full pl-10 pr-4 py-2 rounded-lg border border-slate-300 outline-none focus:ring-2 focus:ring-blue-500" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
         </div>
         <div className="flex flex-wrap items-center gap-4">
           <div className="flex items-center gap-2">
@@ -2808,7 +2941,7 @@ function TicketList({ tickets, onSelect, onDeleteClick, onUpdateSprint, filterSt
           <div className="flex items-center gap-2">
             <span className="text-sm font-semibold text-slate-500">Sprint:</span>
             <select className="border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-blue-500" value={filterSprint} onChange={(e) => setFilterSprint(e.target.value)}>
-              {sprints.map(s => <option key={s} value={s}>{s}</option>)}
+              {sprintFilterOptions.map(s => <option key={s} value={s}>{s}</option>)}
             </select>
           </div>
           <div className="flex items-center gap-2">
@@ -2819,9 +2952,25 @@ function TicketList({ tickets, onSelect, onDeleteClick, onUpdateSprint, filterSt
               {STATUS_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
             </select>
           </div>
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-semibold text-slate-500">Prioridade:</span>
+            <select className="border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-blue-500" value={filterPriority} onChange={(e) => setFilterPriority(e.target.value)}>
+              <option value="Todas">Todas</option>
+              {PRIORITY_OPTIONS.map(p => <option key={p} value={p}>{p}</option>)}
+            </select>
+          </div>
+          <button
+            type="button"
+            onClick={() => downloadTextFile(`demandas_${new Date().toISOString().split('T')[0]}.csv`, ticketsToCsv(filteredAndSortedTickets), 'text/csv;charset=utf-8')}
+            disabled={filteredAndSortedTickets.length === 0}
+            title="Exporta as demandas visíveis na tela (com os filtros aplicados) em CSV, para abrir no Excel ou Planilhas Google."
+            className="bg-emerald-600 text-white px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 hover:bg-emerald-700 disabled:opacity-50 transition-colors shrink-0"
+          >
+            <FileSpreadsheet size={16} /> Exportar CSV ({filteredAndSortedTickets.length})
+          </button>
         </div>
       </div>
-      
+
       <div className="overflow-x-auto">
         <table className="w-full text-left border-collapse">
           <thead>
@@ -2832,6 +2981,7 @@ function TicketList({ tickets, onSelect, onDeleteClick, onUpdateSprint, filterSt
               <th className="px-6 py-4 font-semibold cursor-pointer select-none" onClick={() => handleSort('sponsor')}><div className="flex items-center">Patrocinador <SortIcon columnKey="sponsor" /></div></th>
               <th className="px-6 py-4 font-semibold cursor-pointer select-none" onClick={() => handleSort('keyUser')}><div className="flex items-center">Key User <SortIcon columnKey="keyUser" /></div></th>
               <th className="px-6 py-4 font-semibold cursor-pointer select-none" onClick={() => handleSort('type')}><div className="flex items-center">Tipo <SortIcon columnKey="type" /></div></th>
+              <th className="px-6 py-4 font-semibold cursor-pointer select-none" onClick={() => handleSort('priority')}><div className="flex items-center">Prioridade <SortIcon columnKey="priority" /></div></th>
               <th className="px-6 py-4 font-semibold cursor-pointer select-none" onClick={() => handleSort('sprint')}><div className="flex items-center">Sprint <SortIcon columnKey="sprint" /></div></th>
               <th className="px-6 py-4 font-semibold cursor-pointer select-none" onClick={() => handleSort('analyst')}><div className="flex items-center">Analista <SortIcon columnKey="analyst" /></div></th>
               <th className="px-6 py-4 font-semibold cursor-pointer select-none" onClick={() => handleSort('status')}><div className="flex items-center">Status <SortIcon columnKey="status" /></div></th>
@@ -2848,6 +2998,7 @@ function TicketList({ tickets, onSelect, onDeleteClick, onUpdateSprint, filterSt
                 <td className="px-6 py-4"><span className="text-sm text-slate-600 truncate block max-w-[150px]" title={ticket.sponsor}>{ticket.sponsor || '-'}</span></td>
                 <td className="px-6 py-4"><span className="text-sm text-slate-600 truncate block max-w-[150px]" title={ticket.keyUser}>{ticket.keyUser || '-'}</span></td>
                 <td className="px-6 py-4"><span className="inline-flex gap-1.5 px-2.5 py-1 rounded text-xs bg-slate-100 text-slate-600 border border-slate-200"><Tag size={12} />{ticket.type || 'Não Definido'}</span></td>
+                <td className="px-6 py-4"><span className="inline-flex px-2.5 py-1 rounded-full text-xs font-bold border" style={{ backgroundColor: `${PRIORITY_COLORS[ticket.priority || 'Média']}15`, color: PRIORITY_COLORS[ticket.priority || 'Média'], borderColor: `${PRIORITY_COLORS[ticket.priority || 'Média']}40` }}>{ticket.priority || 'Média'}</span></td>
                 <td className="px-6 py-4">
                   <select
                     className={`border rounded px-2 py-1 outline-none text-sm cursor-pointer min-w-[130px] ${ticket.sprint ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-slate-50 border-slate-200 text-slate-500'}`}
@@ -2874,7 +3025,7 @@ function TicketList({ tickets, onSelect, onDeleteClick, onUpdateSprint, filterSt
                 </td>
               </tr>
             ))}
-            {filteredAndSortedTickets.length === 0 && <tr><td colSpan="11" className="px-6 py-12 text-center text-slate-500">Sem demandas.</td></tr>}
+            {filteredAndSortedTickets.length === 0 && <tr><td colSpan="12" className="px-6 py-12 text-center text-slate-500">Sem demandas.</td></tr>}
           </tbody>
         </table>
       </div>
@@ -2918,10 +3069,16 @@ function OnePageView({ tickets, onSave, systemUser }) {
 
   const safeTicket = useMemo(() => tickets.find(t => t.id === selectedId) || filteredTickets[0] || null, [tickets, selectedId, filteredTickets]);
 
-  const [aiSummary, setAiSummary] = useState('');
+  // Cache por ticket: antes, trocar de demanda disparava uma nova chamada à
+  // IA toda vez (o resumo era regerado a cada troca de seleção, mesmo se já
+  // tinha sido gerado antes para aquele ticket). Agora fica guardado aqui por
+  // id; só é gerado de novo se ainda não existir no cache ou se o usuário
+  // pedir explicitamente (botão "Atualizar").
+  const [aiCache, setAiCache] = useState<Record<string, { summary?: string; nextSteps?: string }>>({});
   const [isGeneratingSummary, setIsGeneratingSummary] = useState(false);
-  const [aiNextSteps, setAiNextSteps] = useState('');
   const [isGeneratingNextSteps, setIsGeneratingNextSteps] = useState(false);
+  const aiSummary = safeTicket ? (aiCache[safeTicket.id]?.summary || '') : '';
+  const aiNextSteps = safeTicket ? (aiCache[safeTicket.id]?.nextSteps || '') : '';
   const timelineRef = useRef(null);
   const [localSchedule, setLocalSchedule] = useState<any>({});
   const [dragState, setDragState] = useState<any>(null); 
@@ -2931,26 +3088,40 @@ function OnePageView({ tickets, onSave, systemUser }) {
   const handleGenerateAISummary = async (targetTicket) => {
     if (!targetTicket) return;
     setIsGeneratingSummary(true);
-    setAiSummary('');
     const historyText = targetTicket.logs && targetTicket.logs.length > 0 ? sortLogsAsc(targetTicket.logs).map(l => `${l.date} (${l.author}): ${l.text}`).join('\n') : "Nenhum histórico registrado.";
     const prompt = `Resumo executivo do histórico da demanda: ${targetTicket.id} - ${targetTicket.description}. Formate em Markdown.\n${historyText}`;
-    try { const result = await callClaudeWithRetry(prompt); setAiSummary(result); } catch (e) { setAiSummary("Erro ao gerar resumo."); } finally { setIsGeneratingSummary(false); }
+    try {
+      const result = await callClaudeWithRetry(prompt);
+      setAiCache(prev => ({ ...prev, [targetTicket.id]: { ...prev[targetTicket.id], summary: result } }));
+    } catch (e) {
+      setAiCache(prev => ({ ...prev, [targetTicket.id]: { ...prev[targetTicket.id], summary: "Erro ao gerar resumo." } }));
+    } finally {
+      setIsGeneratingSummary(false);
+    }
   };
 
   const handleGenerateNextSteps = async (targetTicket) => {
     if (!targetTicket) return;
     setIsGeneratingNextSteps(true);
-    setAiNextSteps('');
     const historyText = targetTicket.logs && targetTicket.logs.length > 0 ? sortLogsAsc(targetTicket.logs).map(l => `${l.date} (${l.author}): ${l.text}`).join('\n') : "Nenhum histórico registrado.";
     const prompt = `Atue como um Scrum Master. Analise o status, descrição e histórico desta demanda e liste os 3 próximos passos práticos, lógicos e imediatos para fazê-la avançar. Formate a resposta usando Markdown (bullet points).\nDemanda: ${targetTicket.description}\nStatus Atual: ${targetTicket.status}\nHistórico: ${historyText}`;
-    try { const result = await callClaudeWithRetry(prompt); setAiNextSteps(result); } catch (e) { setAiNextSteps("Erro ao gerar próximos passos."); } finally { setIsGeneratingNextSteps(false); }
+    try {
+      const result = await callClaudeWithRetry(prompt);
+      setAiCache(prev => ({ ...prev, [targetTicket.id]: { ...prev[targetTicket.id], nextSteps: result } }));
+    } catch (e) {
+      setAiCache(prev => ({ ...prev, [targetTicket.id]: { ...prev[targetTicket.id], nextSteps: "Erro ao gerar próximos passos." } }));
+    } finally {
+      setIsGeneratingNextSteps(false);
+    }
   };
 
-  useEffect(() => { 
-    if (safeTicket) {
+  useEffect(() => {
+    if (safeTicket && !aiCache[safeTicket.id]?.summary) {
       handleGenerateAISummary(safeTicket);
-      setAiNextSteps(''); 
     }
+    // Só depende do id selecionado (e do próprio cache, lido na hora) — não
+    // queremos regenerar sempre que `tickets` mudar por causa do realtime.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId, safeTicket?.id]);
 
   const dynamicTicket = useMemo(() => ({ ...safeTicket, schedule: localSchedule }), [safeTicket, localSchedule]);
@@ -3066,6 +3237,7 @@ function OnePageView({ tickets, onSave, systemUser }) {
         <>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 xl:grid-cols-8 gap-4">
             <div className="bg-white rounded-xl p-5 shadow-sm border border-slate-200 border-l-4" style={{borderLeftColor: STATUS_COLORS[safeTicket.status] || '#CBD5E1'}}><p className="text-xs text-slate-500 font-semibold uppercase mb-1">Status Atual</p><p className="font-bold text-slate-800 truncate" style={{color: STATUS_COLORS[safeTicket.status]}}>{safeTicket.status}</p></div>
+            <div className="bg-white rounded-xl p-5 shadow-sm border border-slate-200 border-l-4" style={{borderLeftColor: PRIORITY_COLORS[safeTicket.priority || 'Média']}}><p className="text-xs text-slate-500 font-semibold uppercase mb-1">Prioridade</p><p className="font-bold truncate" style={{color: PRIORITY_COLORS[safeTicket.priority || 'Média']}}>{safeTicket.priority || 'Média'}</p></div>
             <div className="bg-white rounded-xl p-5 shadow-sm border border-slate-200"><p className="text-xs text-slate-500 font-semibold uppercase mb-1">Progresso</p><div className="flex items-center gap-2"><div className="w-full bg-slate-200 rounded-full h-2"><div className="h-2 rounded-full bg-blue-600" style={{ width: `${safeTicket.progress}%` }}></div></div><span className="text-sm font-bold text-slate-700">{safeTicket.progress}%</span></div></div>
             <div className="bg-white rounded-xl p-5 shadow-sm border border-slate-200"><p className="text-xs text-slate-500 font-semibold uppercase mb-1">Sistema</p><p className="font-bold text-slate-800 flex items-center gap-2 truncate"><Database size={16} className="text-teal-500 shrink-0"/> {safeTicket.sistema || '-'}</p></div>
             <div className="bg-white rounded-xl p-5 shadow-sm border border-slate-200"><p className="text-xs text-slate-500 font-semibold uppercase mb-1">Key User / Tipo</p><p className="font-bold text-slate-800 flex items-center gap-2 truncate"><User size={16} className="text-blue-500 shrink-0"/> {safeTicket.keyUser}</p></div>
@@ -3074,6 +3246,14 @@ function OnePageView({ tickets, onSave, systemUser }) {
             <div className="bg-white rounded-xl p-5 shadow-sm border border-slate-200"><p className="text-xs text-slate-500 font-semibold uppercase mb-1">Patrocinador</p><p className="font-bold text-slate-800 flex items-center gap-2 truncate"><Shield size={16} className="text-indigo-500 shrink-0"/> {safeTicket.sponsor || '-'}</p></div>
             <div className="bg-white rounded-xl p-5 shadow-sm border border-slate-200"><p className="text-xs text-slate-500 font-semibold uppercase mb-1">Sprint</p><p className="font-bold text-slate-800 flex items-center gap-2 truncate"><Tag size={16} className="text-orange-500 shrink-0"/> {safeTicket.sprint || 'Sem Sprint'}</p></div>
           </div>
+
+          {safeTicket.tags && safeTicket.tags.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2">
+              {safeTicket.tags.map((tag, i) => (
+                <span key={`${tag}-${i}`} className="inline-flex items-center gap-1 bg-blue-50 text-blue-700 border border-blue-200 text-xs font-semibold px-2.5 py-1 rounded-full"><Tag size={11}/>{tag}</span>
+              ))}
+            </div>
+          )}
 
           <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden flex flex-col w-full" style={{ userSelect: dragState ? 'none' : 'auto' }}>
             <div className="p-4 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
@@ -3136,14 +3316,24 @@ function OnePageView({ tickets, onSave, systemUser }) {
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
             <div className="flex flex-col gap-6">
               <div className="bg-gradient-to-br from-indigo-50 to-purple-50 rounded-xl shadow-sm border border-indigo-100 overflow-hidden flex flex-col">
-                <div className="p-4 border-b border-indigo-100/50 flex justify-between items-center"><h3 className="font-bold text-indigo-900">Resumo Executivo (IA)</h3></div>
+                <div className="p-4 border-b border-indigo-100/50 flex justify-between items-center">
+                  <h3 className="font-bold text-indigo-900">Resumo Executivo (IA)</h3>
+                  {aiSummary && !isGeneratingSummary && (
+                    <button onClick={() => handleGenerateAISummary(safeTicket)} title="Gerar um novo resumo com o histórico atual" className="text-indigo-600 hover:text-indigo-800 p-1 rounded transition-colors"><RefreshCcw size={14} /></button>
+                  )}
+                </div>
                 <div className="p-5 flex flex-col gap-4">
                   {!isGeneratingSummary ? (aiSummary ? <div className="text-[14px] text-slate-800 whitespace-pre-wrap">{aiSummary}</div> : <button onClick={() => handleGenerateAISummary(safeTicket)} className="bg-indigo-600 text-white px-5 py-2 rounded-lg text-sm font-bold flex justify-center gap-2 mx-auto"><Sparkles size={16} /> Gerar Resumo Inteligente</button>) : <div className="flex justify-center py-4"><Loader2 className="animate-spin text-indigo-600" /></div>}
                 </div>
               </div>
               
               <div className="bg-gradient-to-br from-teal-50 to-emerald-50 rounded-xl shadow-sm border border-teal-100 overflow-hidden flex flex-col">
-                <div className="p-4 border-b border-teal-100/50 flex justify-between items-center"><h3 className="font-bold text-teal-900">Próximos Passos (IA)</h3></div>
+                <div className="p-4 border-b border-teal-100/50 flex justify-between items-center">
+                  <h3 className="font-bold text-teal-900">Próximos Passos (IA)</h3>
+                  {aiNextSteps && !isGeneratingNextSteps && (
+                    <button onClick={() => handleGenerateNextSteps(safeTicket)} title="Gerar novas sugestões com o histórico atual" className="text-teal-600 hover:text-teal-800 p-1 rounded transition-colors"><RefreshCcw size={14} /></button>
+                  )}
+                </div>
                 <div className="p-5 flex flex-col gap-4">
                   {!isGeneratingNextSteps ? (aiNextSteps ? <div className="text-[14px] text-slate-800 whitespace-pre-wrap">{aiNextSteps}</div> : <button onClick={() => handleGenerateNextSteps(safeTicket)} className="bg-teal-600 text-white px-5 py-2 rounded-lg text-sm font-bold flex justify-center gap-2 mx-auto"><Sparkles size={16} /> ✨ Sugerir Próximos Passos</button>) : <div className="flex justify-center py-4"><Loader2 className="animate-spin text-teal-600" /></div>}
                 </div>
@@ -3564,8 +3754,9 @@ function KanbanView({ tickets, onSelect, onStatusChange }) {
                     <div key={ticket.id} draggable onDragStart={e => e.dataTransfer.setData("ticketId", ticket.id)} onClick={() => onSelect(ticket)} className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 cursor-pointer hover:border-blue-400 overflow-hidden flex flex-col min-w-0">
                        <div className="flex justify-between items-start mb-2 gap-2">
                          <span className="text-xs font-bold text-blue-600 truncate min-w-0 flex-1">{ticket.id}</span>
+                         <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full shrink-0" style={{ backgroundColor: `${PRIORITY_COLORS[ticket.priority || 'Média']}15`, color: PRIORITY_COLORS[ticket.priority || 'Média'] }}>{ticket.priority || 'Média'}</span>
                        </div>
-                       
+
                        <p className="text-sm text-slate-700 font-medium mb-3 line-clamp-2 break-words">{ticket.description}</p>
                        
                        <div className="flex flex-col gap-1.5 mb-3 bg-slate-50 rounded p-2 border border-slate-100 overflow-hidden min-w-0">
@@ -3906,6 +4097,42 @@ function TicketModal({ ticket, projects = [], demandTypes = [], systems = [], on
                    <div><label className="text-xs font-bold text-slate-500 uppercase mb-1 block">Status</label><select value={formData.status} onChange={e=>setFormData({...formData, status: e.target.value})} className="w-full border border-slate-300 rounded-lg p-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50 focus:bg-white">{STATUS_OPTIONS.map(t=><option key={t} value={t}>{t}</option>)}</select></div>
                    <div><label className="text-xs font-bold text-slate-500 uppercase mb-1 block">Sistema</label><select value={formData.sistema || ''} onChange={e=>setFormData({...formData, sistema: e.target.value})} className="w-full border border-slate-300 rounded-lg p-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50 focus:bg-white"><option value="">-- Selecionar --</option>{systems.map(s=><option key={s.id} value={s.name}>{s.name}</option>)}</select></div>
                    <div><label className="text-xs font-bold text-slate-500 uppercase mb-1 block">Progresso (%)</label><input type="number" min="0" max="100" value={formData.progress} onChange={e=>setFormData({...formData, progress: Number(e.target.value)})} className="w-full border border-slate-300 rounded-lg p-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50 focus:bg-white" /></div>
+                   <div>
+                      <label className="text-xs font-bold text-slate-500 uppercase mb-1 block">Prioridade</label>
+                      <select value={formData.priority || 'Média'} onChange={e=>setFormData({...formData, priority: e.target.value})} className="w-full border border-slate-300 rounded-lg p-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50 focus:bg-white">
+                         {PRIORITY_OPTIONS.map(p=><option key={p} value={p}>{p}</option>)}
+                      </select>
+                   </div>
+                 </div>
+                 <div>
+                   <label className="text-xs font-bold text-slate-500 uppercase mb-1 block">Tags</label>
+                   <div className="w-full border border-slate-300 rounded-lg p-2 flex flex-wrap gap-1.5 bg-slate-50 focus-within:ring-2 focus-within:ring-blue-500 focus-within:bg-white transition-colors min-h-[42px]">
+                      {(formData.tags || []).map((tag, i) => (
+                         <span key={`${tag}-${i}`} className="inline-flex items-center gap-1 bg-blue-100 text-blue-700 text-xs font-semibold px-2 py-1 rounded-full">
+                            {tag}
+                            <button type="button" onClick={() => setFormData(prev => ({ ...prev, tags: prev.tags.filter((_, idx) => idx !== i) }))} className="hover:text-blue-900"><X size={12}/></button>
+                         </span>
+                      ))}
+                      <input
+                        type="text"
+                        placeholder={(formData.tags || []).length === 0 ? "Digite e pressione Enter..." : "Adicionar..."}
+                        className="flex-1 min-w-[100px] text-sm outline-none bg-transparent"
+                        onKeyDown={(e) => {
+                           if ((e.key === 'Enter' || e.key === ',') && e.currentTarget.value.trim()) {
+                              e.preventDefault();
+                              const newTag = e.currentTarget.value.trim();
+                              setFormData(prev => {
+                                 const existing = prev.tags || [];
+                                 if (existing.some(t => t.toLowerCase() === newTag.toLowerCase())) return prev;
+                                 return { ...prev, tags: [...existing, newTag] };
+                              });
+                              e.currentTarget.value = '';
+                           } else if (e.key === 'Backspace' && !e.currentTarget.value && (formData.tags || []).length > 0) {
+                              setFormData(prev => ({ ...prev, tags: prev.tags.slice(0, -1) }));
+                           }
+                        }}
+                      />
+                   </div>
                  </div>
               </div>
               <div className="flex flex-col gap-4 h-full min-h-[350px]">
