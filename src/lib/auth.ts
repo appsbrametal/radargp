@@ -28,6 +28,7 @@ export async function fetchProfile(userId: string): Promise<AppProfile | null> {
     name: data.name,
     roles: data.roles || [],
     email: data.email,
+    blocked: data.blocked,
   };
 }
 
