@@ -235,6 +235,21 @@ const formatDateShort = (ms) => {
   return d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
 };
 
+// Igual a formatDateShort, mas com o ano (2 dígitos) — usada especificamente
+// nas legendas de cada barra do Gantt "Cronograma de Fases"/"Ajuste Visual
+// Rápido". Sem o ano, uma fase que atravessa a virada do ano (ex.: começou
+// em 12/05/2025 e só terminou em 03/06/2026) mostra "12/05 a 03/06", o que
+// parece um intervalo de 3 semanas — mas a barra é desenhada com a duração
+// REAL (mais de um ano), então ela ocupa a maior parte do gráfico e parece
+// "errada" para quem lê só a legenda sem o ano. Nos demais usos de
+// formatDateShort (cabeçalhos semanais do Roadmap) isso não acontece porque
+// cada coluna já fica agrupada sob um cabeçalho de mês/ano.
+const formatDateShortYear = (ms) => {
+  if (!ms) return '';
+  const d = new Date(ms);
+  return d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit' });
+};
+
 const sortLogsDesc = (logs) => {
   if (!logs) return [];
   return [...logs].sort((a, b) => {
@@ -3663,12 +3678,18 @@ function PrintableOnePage({ ticket, pageNumber, totalPages }) {
         </div>
       </div>
 
-      <div className="border border-slate-200 rounded-xl overflow-hidden flex flex-col w-full no-break shrink-0">
-        <div className="p-3 border-b border-slate-200 bg-slate-100 flex items-center gap-2">
+      <div className="border border-slate-200 rounded-xl flex flex-col w-full no-break shrink-0">
+        <div className="p-3 border-b border-slate-200 bg-slate-100 rounded-t-xl flex items-center gap-2">
           <AlignLeft size={16} className="text-slate-500" />
           <h3 className="font-bold text-sm text-slate-700 uppercase tracking-wider">Cronograma de Fases</h3>
         </div>
-        <div className="p-5">
+        {/* Sem "overflow-hidden" aqui: quando uma fase termina bem perto da data
+            máxima do cronograma (ex.: a última fase, "Go Live"), a legenda de
+            data/progresso que fica ao lado da barra pode ultrapassar levemente
+            os 100% da faixa — com overflow-hidden essa legenda inteira
+            desaparecia (ficava sem nenhum texto), dando a impressão de que o
+            cronograma "cortava" ao final das últimas tarefas. */}
+        <div className="p-5 rounded-b-xl">
           <div className="flex border-b border-slate-200 pb-2 mb-3 text-[10px] font-bold text-slate-400 uppercase">
             <div className="w-[25%]">Fase</div>
             <div className="w-[75%] flex justify-between px-2">
@@ -3680,8 +3701,13 @@ function PrintableOnePage({ ticket, pageNumber, totalPages }) {
             {ganttPhases.map((phase, i) => {
               let pLeftPos = 0, pWidthPos = 0, aLeftPos = 0, aWidthPos = 0;
               if (phase.plannedStartMs && phase.plannedEndMs) { pLeftPos = ((phase.plannedStartMs - minDateMs) / totalMs) * 100; pWidthPos = ((phase.plannedEndMs - phase.plannedStartMs) / totalMs) * 100; }
-              if (phase.actualStartMs && phase.actualEndMs) { aLeftPos = ((phase.actualStartMs - minDateMs) / totalMs) * 100; aWidthPos = ((phase.actualEndMs - phase.actualStartMs) / totalMs) * 100; } 
+              if (phase.actualStartMs && phase.actualEndMs) { aLeftPos = ((phase.actualStartMs - minDateMs) / totalMs) * 100; aWidthPos = ((phase.actualEndMs - phase.actualStartMs) / totalMs) * 100; }
               else if (phase.actualStartMs) { aLeftPos = ((phase.actualStartMs - minDateMs) / totalMs) * 100; aWidthPos = ((Math.min(new Date().getTime(), maxDateMs) - phase.actualStartMs) / totalMs) * 100; }
+              // Trava defensiva: garante que nenhuma barra ultrapasse
+              // matematicamente os 100% da faixa (evita arredondamento/():
+              // datas iguais ao limite máximo empurrando a barra para fora).
+              pWidthPos = Math.max(0, Math.min(pWidthPos, 100 - pLeftPos));
+              aWidthPos = Math.max(0, Math.min(aWidthPos, 100 - aLeftPos));
               return (
                 <div key={i} className="flex items-center border-b border-slate-50/50 pb-2 mb-2 relative">
                   <div className="w-[25%] pr-2"><span className="text-[11px] font-bold text-slate-700 leading-tight block">{phase.name}</span></div>
@@ -3690,7 +3716,7 @@ function PrintableOnePage({ ticket, pageNumber, totalPages }) {
                       <div className="flex items-center" style={{ marginLeft: `${pLeftPos}%` }}>
                         <div className="h-3 rounded bg-slate-200 opacity-90 print:bg-slate-200 print:opacity-100 shrink-0" style={{ width: `${pWidthPos}%`, minWidth: '30px' }}></div>
                         <span className="ml-1 text-[8px] font-bold text-slate-400 whitespace-nowrap">
-                           {formatDateShort(phase.plannedStartMs)} a {formatDateShort(phase.plannedEndMs)}
+                           {formatDateShortYear(phase.plannedStartMs)} a {formatDateShortYear(phase.plannedEndMs)}
                         </span>
                       </div>
                     ) : <div className="h-3"></div>}
@@ -3703,7 +3729,7 @@ function PrintableOnePage({ ticket, pageNumber, totalPages }) {
                            <span className="text-[9px] font-black text-slate-700">{phase.progress}%</span>
                            <span className="text-[8px] font-bold text-slate-500 flex items-center gap-1">
                               <span className="w-1 h-1 rounded-full bg-slate-400"></span>
-                              {formatDateShort(phase.actualStartMs)} {phase.actualEndMs ? `a ${formatDateShort(phase.actualEndMs)}` : ''}
+                              {formatDateShortYear(phase.actualStartMs)} {phase.actualEndMs ? `a ${formatDateShortYear(phase.actualEndMs)}` : ''}
                            </span>
                         </div>
                       </div>
@@ -3719,24 +3745,9 @@ function PrintableOnePage({ ticket, pageNumber, totalPages }) {
       <div className="border border-slate-200 rounded-xl overflow-hidden flex flex-col w-full no-break shrink-0">
         <div className="p-3 border-b border-slate-200 bg-slate-100 flex items-center gap-2">
           <UserCircle size={16} className="text-slate-500" />
-          <h3 className="font-bold text-sm text-slate-700 uppercase tracking-wider">Equipe e Envolvidos</h3>
-        </div>
-        <div className="p-5 grid grid-cols-1 sm:grid-cols-3 gap-5 border-b border-slate-100">
-          <div>
-            <p className="text-[10px] text-slate-500 font-bold uppercase mb-1">Key User</p>
-            <p className="font-bold text-sm text-slate-800">{ticket.keyUser || '-'}</p>
-          </div>
-          <div>
-            <p className="text-[10px] text-slate-500 font-bold uppercase mb-1">Analista Resp.</p>
-            <p className="font-bold text-sm text-slate-800">{ticket.analyst || '-'}</p>
-          </div>
-          <div>
-            <p className="text-[10px] text-slate-500 font-bold uppercase mb-1">Patrocinador</p>
-            <p className="font-bold text-sm text-slate-800">{ticket.sponsor || '-'}</p>
-          </div>
+          <h3 className="font-bold text-sm text-slate-700 uppercase tracking-wider">Recursos (Equipe de Execução)</h3>
         </div>
         <div className="p-5">
-          <p className="text-[10px] text-slate-500 font-bold uppercase mb-2">Recursos (Equipe de Execução)</p>
           {resourceNames.length > 0 ? (
             <div className="flex flex-wrap gap-2">
               {resourceNames.map((nome, i) => (
@@ -4551,6 +4562,12 @@ function TicketModal({ ticket, tickets = [], projects = [], demandTypes = [], sy
                         if (phase.plannedStartMs && phase.plannedEndMs) { pLeftPos = ((phase.plannedStartMs - minDateMs) / totalMs) * 100; pWidthPos = ((phase.plannedEndMs - phase.plannedStartMs) / totalMs) * 100; }
                         if (phase.actualStartMs && phase.actualEndMs) { aLeftPos = ((phase.actualStartMs - minDateMs) / totalMs) * 100; aWidthPos = ((phase.actualEndMs - phase.actualStartMs) / totalMs) * 100; }
                         else if (phase.actualStartMs) { aLeftPos = ((phase.actualStartMs - minDateMs) / totalMs) * 100; aWidthPos = ((Math.min(new Date().getTime(), maxDateMs) - phase.actualStartMs) / totalMs) * 100; }
+                        // Trava defensiva: garante que nenhuma barra ultrapasse
+                        // matematicamente os 100% da faixa (evita arredondamento
+                        // ou datas iguais ao limite máximo empurrando a barra
+                        // para fora da área visível).
+                        pWidthPos = Math.max(0, Math.min(pWidthPos, 100 - pLeftPos));
+                        aWidthPos = Math.max(0, Math.min(aWidthPos, 100 - aLeftPos));
                         return (
                           <div key={i} className="flex items-stretch border-b border-slate-50 py-3.5 relative group min-h-[64px]">
                             <div className="w-[220px] shrink-0 sticky left-0 pr-4 z-10 bg-white group-hover:bg-slate-50 transition-colors flex items-center">
@@ -4562,7 +4579,7 @@ function TicketModal({ ticket, tickets = [], projects = [], demandTypes = [], sy
                                 <div className="flex items-center" style={{ marginLeft: `calc(${pLeftPos}% - 0.5rem)` }}>
                                   <div className="h-4 rounded-md bg-slate-200 opacity-90 shrink-0" style={{ width: `${pWidthPos}%`, minWidth: '40px' }}></div>
                                   <span className="ml-1.5 text-[9px] font-bold text-slate-400 whitespace-nowrap">
-                                     {formatDateShort(phase.plannedStartMs)} a {formatDateShort(phase.plannedEndMs)}
+                                     {formatDateShortYear(phase.plannedStartMs)} a {formatDateShortYear(phase.plannedEndMs)}
                                   </span>
                                 </div>
                               ) : <div className="h-4"></div>}
@@ -4578,7 +4595,7 @@ function TicketModal({ ticket, tickets = [], projects = [], demandTypes = [], sy
                                      <span className="text-[11px] font-black text-slate-700">{phase.progress}%</span>
                                      <span className="text-[10px] font-bold text-slate-500 flex items-center gap-1">
                                         <span className="w-1 h-1 rounded-full bg-slate-400"></span>
-                                        {formatDateShort(phase.actualStartMs)} {phase.actualEndMs ? `a ${formatDateShort(phase.actualEndMs)}` : ''}
+                                        {formatDateShortYear(phase.actualStartMs)} {phase.actualEndMs ? `a ${formatDateShortYear(phase.actualEndMs)}` : ''}
                                      </span>
                                   </div>
                                 </div>
