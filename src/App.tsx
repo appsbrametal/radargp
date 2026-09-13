@@ -4049,6 +4049,11 @@ function TicketModal({ ticket, tickets = [], projects = [], demandTypes = [], sy
   if (minDateMs === Infinity) minDateMs = new Date().getTime();
   if (maxDateMs === 0) maxDateMs = new Date().getTime() + 86400000;
   const totalMs = Math.max(maxDateMs - minDateMs, 86400000);
+  // Linha de referência "Hoje" no mini-Gantt de "Ajuste Visual Rápido" — só
+  // faz sentido desenhar quando a data atual cai dentro do intervalo visível.
+  const ganttNowMs = new Date().getTime();
+  const showTodayLine = ganttNowMs > minDateMs && ganttNowMs < maxDateMs;
+  const todayPct = ((ganttNowMs - minDateMs) / totalMs) * 100;
 
   const startDrag = (e, phaseName, handleType) => {
     e.preventDefault();
@@ -4443,21 +4448,45 @@ function TicketModal({ ticket, tickets = [], projects = [], demandTypes = [], sy
               </div>
 
               <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden flex flex-col w-full" style={{ userSelect: dragState ? 'none' : 'auto' }}>
-                <div className="p-3 border-b border-slate-200 bg-slate-50"><h3 className="font-semibold text-sm text-slate-700">Ajuste Visual Rápido</h3></div>
+                <div className="p-3 border-b border-slate-200 bg-slate-50 flex flex-wrap items-center justify-between gap-2">
+                  <h3 className="font-semibold text-sm text-slate-700">Ajuste Visual Rápido</h3>
+                  <div className="flex items-center gap-4 text-[10px] font-bold text-slate-400 uppercase tracking-wide">
+                    <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm bg-slate-200 border border-slate-300"></span>Planejado</span>
+                    <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm bg-blue-500"></span>Real</span>
+                    {showTodayLine && <span className="flex items-center gap-1.5"><span className="w-2.5 h-px border-t-2 border-dashed border-rose-400"></span>Hoje</span>}
+                  </div>
+                </div>
+                {/* Coluna da fase é sticky (largura fixa) para não ser cortada quando o
+                    gráfico rola horizontalmente — antes ficava com largura percentual
+                    (w-[25%]) sem "sticky", então ao rolar para o fim do cronograma o
+                    nome das fases somia por baixo do gráfico. */}
                 <div className="p-4 overflow-x-auto relative">
                   <div className="min-w-[800px]">
-                    <div className="flex border-b border-slate-200 pb-2 mb-4 text-xs font-bold text-slate-400 uppercase"><div className="w-[25%]"></div><div className="w-[75%] flex justify-between px-2"><div className="text-left">{formatMonthYear(minDateMs)}</div><div className="text-right">{formatMonthYear(maxDateMs)}</div></div></div>
+                    <div className="flex border-b border-slate-200 pb-2 mb-2 text-xs font-bold text-slate-400 uppercase">
+                      <div className="w-[220px] shrink-0 sticky left-0 bg-white z-10">Fase</div>
+                      <div className="flex-1 flex justify-between px-2"><div className="text-left">{formatMonthYear(minDateMs)}</div><div className="text-right">{formatMonthYear(maxDateMs)}</div></div>
+                    </div>
                     <div className="relative">
+                      {showTodayLine && (
+                        <div
+                          className="absolute top-0 bottom-0 w-0 border-l-2 border-dashed border-rose-300 z-20 pointer-events-none"
+                          style={{ left: `calc(220px + (100% - 220px) * ${todayPct / 100})` }}
+                        >
+                          <span className="absolute -top-0.5 -translate-x-1/2 text-[8px] font-black text-rose-500 uppercase whitespace-nowrap bg-white px-1 rounded-sm border border-rose-200">Hoje</span>
+                        </div>
+                      )}
                       {ganttPhases.map((phase, i) => {
                         let pLeftPos = 0, pWidthPos = 0, aLeftPos = 0, aWidthPos = 0;
                         if (phase.plannedStartMs && phase.plannedEndMs) { pLeftPos = ((phase.plannedStartMs - minDateMs) / totalMs) * 100; pWidthPos = ((phase.plannedEndMs - phase.plannedStartMs) / totalMs) * 100; }
-                        if (phase.actualStartMs && phase.actualEndMs) { aLeftPos = ((phase.actualStartMs - minDateMs) / totalMs) * 100; aWidthPos = ((phase.actualEndMs - phase.actualStartMs) / totalMs) * 100; } 
+                        if (phase.actualStartMs && phase.actualEndMs) { aLeftPos = ((phase.actualStartMs - minDateMs) / totalMs) * 100; aWidthPos = ((phase.actualEndMs - phase.actualStartMs) / totalMs) * 100; }
                         else if (phase.actualStartMs) { aLeftPos = ((phase.actualStartMs - minDateMs) / totalMs) * 100; aWidthPos = ((Math.min(new Date().getTime(), maxDateMs) - phase.actualStartMs) / totalMs) * 100; }
                         return (
-                          <div key={i} className="flex items-center border-b border-slate-50 py-3 relative group">
-                            <div className="w-[25%] pr-4 z-10 bg-white"><span className="text-xs font-bold text-slate-700 truncate block">{phase.name}</span></div>
-                            <div className="w-[75%] relative flex flex-col justify-center gap-2 h-full pt-1 px-2" ref={i === 0 ? timelineRef : null}>
-                              
+                          <div key={i} className="flex items-stretch border-b border-slate-50 py-3.5 relative group min-h-[64px]">
+                            <div className="w-[220px] shrink-0 sticky left-0 pr-4 z-10 bg-white group-hover:bg-slate-50 transition-colors flex items-center">
+                              <span className="text-xs font-bold text-slate-700 leading-tight line-clamp-2" title={phase.name}>{phase.name}</span>
+                            </div>
+                            <div className="flex-1 min-w-0 relative flex flex-col justify-center gap-2 pt-1 px-2" ref={i === 0 ? timelineRef : null}>
+
                               {(phase.plannedStartMs && phase.plannedEndMs) ? (
                                 <div className="flex items-center" style={{ marginLeft: `calc(${pLeftPos}% - 0.5rem)` }}>
                                   <div className="h-4 rounded-md bg-slate-200 opacity-90 shrink-0" style={{ width: `${pWidthPos}%`, minWidth: '40px' }}></div>
@@ -4466,11 +4495,11 @@ function TicketModal({ ticket, tickets = [], projects = [], demandTypes = [], sy
                                   </span>
                                 </div>
                               ) : <div className="h-4"></div>}
-                              
+
                               {phase.actualStartMs ? (
                                 <div className="flex items-center" style={{ marginLeft: `calc(${aLeftPos}% - 0.5rem)` }}>
-                                  <div className={`h-6 rounded-md bg-slate-100 shadow-sm border border-slate-300 relative ${dragState?.phaseName === phase.name ? 'ring-2 ring-blue-400' : ''}`} style={{ width: `${aWidthPos}%`, minWidth: '70px' }}>
-                                    <div className={`absolute top-0 left-0 h-full ${phase.progress === 100 ? 'bg-emerald-500' : (phase.progress > 0 ? 'bg-blue-500' : 'bg-slate-300')}`} style={{ width: `${phase.progress}%`, minWidth: '2px' }}></div>
+                                  <div className={`h-6 rounded-md bg-slate-100 shadow-sm border border-slate-300 relative transition-shadow ${dragState?.phaseName === phase.name ? 'ring-2 ring-blue-400 shadow-md' : ''}`} style={{ width: `${aWidthPos}%`, minWidth: '70px' }}>
+                                    <div className={`absolute top-0 left-0 h-full rounded-md ${phase.progress === 100 ? 'bg-emerald-500' : (phase.progress > 0 ? 'bg-blue-500' : 'bg-slate-300')}`} style={{ width: `${phase.progress}%`, minWidth: '2px' }}></div>
                                     <div className="absolute top-0 left-0 bottom-0 w-3 cursor-ew-resize bg-black/0 hover:bg-black/10 transition-colors rounded-l-md z-10" onMouseDown={(e) => startDrag(e, phase.name, 'start')}></div>
                                     {phase.actualEndMs && <div className="absolute top-0 right-0 bottom-0 w-3 cursor-ew-resize bg-black/0 hover:bg-black/10 transition-colors rounded-r-md z-10" onMouseDown={(e) => startDrag(e, phase.name, 'end')}></div>}
                                   </div>
