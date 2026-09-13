@@ -3708,24 +3708,40 @@ function PrintableOnePage({ ticket, pageNumber, totalPages }) {
               // datas iguais ao limite máximo empurrando a barra para fora).
               pWidthPos = Math.max(0, Math.min(pWidthPos, 100 - pLeftPos));
               aWidthPos = Math.max(0, Math.min(aWidthPos, 100 - aLeftPos));
+              // Quando a barra termina perto do fim da faixa (fases mais
+              // recentes, geralmente as últimas do cronograma), a legenda que
+              // normalmente fica DEPOIS da barra não tem mais espaço à
+              // direita e passava a "vazar" para fora do quadro (reportado
+              // pelo usuário com um print mostrando o texto fora da borda).
+              // Nesses casos a legenda passa a ficar ANTES da barra (ancorada
+              // pela direita, crescendo para a esquerda), que nunca ultrapassa
+              // o limite da faixa.
+              const pLabelBefore = (pLeftPos + pWidthPos) > 70;
+              const aLabelBefore = (aLeftPos + aWidthPos) > 62;
               return (
                 <div key={i} className="flex items-center border-b border-slate-50/50 pb-2 mb-2 relative">
                   <div className="w-[25%] pr-2"><span className="text-[11px] font-bold text-slate-700 leading-tight block">{phase.name}</span></div>
                   <div className="w-[75%] relative flex flex-col justify-center gap-1.5 px-2">
                     {(phase.plannedStartMs && phase.plannedEndMs) ? (
-                      <div className="flex items-center" style={{ marginLeft: `${pLeftPos}%` }}>
-                        <div className="h-3 rounded bg-slate-200 opacity-90 print:bg-slate-200 print:opacity-100 shrink-0" style={{ width: `${pWidthPos}%`, minWidth: '30px' }}></div>
-                        <span className="ml-1 text-[8px] font-bold text-slate-400 whitespace-nowrap">
+                      <div className="relative h-3">
+                        <div className="absolute h-3 rounded bg-slate-200 opacity-90 print:bg-slate-200 print:opacity-100" style={{ left: `${pLeftPos}%`, width: `${pWidthPos}%`, minWidth: '30px' }}></div>
+                        <span
+                          className="absolute top-0 h-3 flex items-center text-[8px] font-bold text-slate-400 whitespace-nowrap"
+                          style={pLabelBefore ? { right: `calc(${100 - pLeftPos}% + 4px)` } : { left: `calc(${pLeftPos + pWidthPos}% + 4px)` }}
+                        >
                            {formatDateShortYear(phase.plannedStartMs)} a {formatDateShortYear(phase.plannedEndMs)}
                         </span>
                       </div>
                     ) : <div className="h-3"></div>}
                     {phase.actualStartMs ? (
-                      <div className="flex items-center" style={{ marginLeft: `${aLeftPos}%` }}>
-                        <div className="h-4 rounded bg-slate-100 border border-slate-300 relative print:bg-slate-100" style={{ width: `${aWidthPos}%`, minWidth: '40px' }}>
+                      <div className="relative h-4">
+                        <div className="absolute h-4 rounded bg-slate-100 border border-slate-300 print:bg-slate-100" style={{ left: `${aLeftPos}%`, width: `${aWidthPos}%`, minWidth: '40px' }}>
                           <div className={`absolute top-0 left-0 h-full ${phase.progress === 100 ? 'bg-emerald-500' : (phase.progress > 0 ? 'bg-blue-500' : 'bg-slate-300')} print:opacity-100`} style={{ width: `${phase.progress}%`, minWidth: '2px' }}></div>
                         </div>
-                        <div className="ml-1.5 flex items-center gap-1.5 pointer-events-none whitespace-nowrap">
+                        <div
+                          className="absolute top-0 h-4 flex items-center gap-1.5 pointer-events-none whitespace-nowrap"
+                          style={aLabelBefore ? { right: `calc(${100 - aLeftPos}% + 6px)` } : { left: `calc(${aLeftPos + aWidthPos}% + 6px)` }}
+                        >
                            <span className="text-[9px] font-black text-slate-700">{phase.progress}%</span>
                            <span className="text-[8px] font-bold text-slate-500 flex items-center gap-1">
                               <span className="w-1 h-1 rounded-full bg-slate-400"></span>
@@ -4568,6 +4584,13 @@ function TicketModal({ ticket, tickets = [], projects = [], demandTypes = [], sy
                         // para fora da área visível).
                         pWidthPos = Math.max(0, Math.min(pWidthPos, 100 - pLeftPos));
                         aWidthPos = Math.max(0, Math.min(aWidthPos, 100 - aLeftPos));
+                        // Mesma lógica de "virar a legenda para antes da barra"
+                        // usada no Relatório PDF: perto do fim da faixa não
+                        // sobra espaço à direita para a legenda, e ela acabava
+                        // empurrando a linha para fora da área visível/exigindo
+                        // rolar para o final para lê-la.
+                        const pLabelBefore = (pLeftPos + pWidthPos) > 70;
+                        const aLabelBefore = (aLeftPos + aWidthPos) > 62;
                         return (
                           <div key={i} className="flex items-stretch border-b border-slate-50 py-3.5 relative group min-h-[64px]">
                             <div className="w-[220px] shrink-0 sticky left-0 pr-4 z-10 bg-white group-hover:bg-slate-50 transition-colors flex items-center">
@@ -4576,22 +4599,28 @@ function TicketModal({ ticket, tickets = [], projects = [], demandTypes = [], sy
                             <div className="flex-1 min-w-0 relative flex flex-col justify-center gap-2 pt-1 px-2" ref={i === 0 ? timelineRef : null}>
 
                               {(phase.plannedStartMs && phase.plannedEndMs) ? (
-                                <div className="flex items-center" style={{ marginLeft: `calc(${pLeftPos}% - 0.5rem)` }}>
-                                  <div className="h-4 rounded-md bg-slate-200 opacity-90 shrink-0" style={{ width: `${pWidthPos}%`, minWidth: '40px' }}></div>
-                                  <span className="ml-1.5 text-[9px] font-bold text-slate-400 whitespace-nowrap">
+                                <div className="relative h-4">
+                                  <div className="absolute h-4 rounded-md bg-slate-200 opacity-90" style={{ left: `calc(${pLeftPos}% - 0.5rem)`, width: `${pWidthPos}%`, minWidth: '40px' }}></div>
+                                  <span
+                                    className="absolute top-0 h-4 flex items-center text-[9px] font-bold text-slate-400 whitespace-nowrap"
+                                    style={pLabelBefore ? { right: `calc(${100 - pLeftPos}% + 0.5rem + 6px)` } : { left: `calc(${pLeftPos + pWidthPos}% - 0.5rem + 6px)` }}
+                                  >
                                      {formatDateShortYear(phase.plannedStartMs)} a {formatDateShortYear(phase.plannedEndMs)}
                                   </span>
                                 </div>
                               ) : <div className="h-4"></div>}
 
                               {phase.actualStartMs ? (
-                                <div className="flex items-center" style={{ marginLeft: `calc(${aLeftPos}% - 0.5rem)` }}>
-                                  <div className={`h-6 rounded-md bg-slate-100 shadow-sm border border-slate-300 relative transition-shadow ${dragState?.phaseName === phase.name ? 'ring-2 ring-blue-400 shadow-md' : ''}`} style={{ width: `${aWidthPos}%`, minWidth: '70px' }}>
+                                <div className="relative h-6">
+                                  <div className={`absolute h-6 rounded-md bg-slate-100 shadow-sm border border-slate-300 transition-shadow ${dragState?.phaseName === phase.name ? 'ring-2 ring-blue-400 shadow-md' : ''}`} style={{ left: `calc(${aLeftPos}% - 0.5rem)`, width: `${aWidthPos}%`, minWidth: '70px' }}>
                                     <div className={`absolute top-0 left-0 h-full rounded-md ${phase.progress === 100 ? 'bg-emerald-500' : (phase.progress > 0 ? 'bg-blue-500' : 'bg-slate-300')}`} style={{ width: `${phase.progress}%`, minWidth: '2px' }}></div>
                                     <div className="absolute top-0 left-0 bottom-0 w-3 cursor-ew-resize bg-black/0 hover:bg-black/10 transition-colors rounded-l-md z-10" onMouseDown={(e) => startDrag(e, phase.name, 'start')}></div>
                                     {phase.actualEndMs && <div className="absolute top-0 right-0 bottom-0 w-3 cursor-ew-resize bg-black/0 hover:bg-black/10 transition-colors rounded-r-md z-10" onMouseDown={(e) => startDrag(e, phase.name, 'end')}></div>}
                                   </div>
-                                  <div className="ml-2 flex items-center gap-1.5 pointer-events-none whitespace-nowrap">
+                                  <div
+                                    className="absolute top-0 h-6 flex items-center gap-1.5 pointer-events-none whitespace-nowrap"
+                                    style={aLabelBefore ? { right: `calc(${100 - aLeftPos}% + 0.5rem + 8px)` } : { left: `calc(${aLeftPos + aWidthPos}% - 0.5rem + 8px)` }}
+                                  >
                                      <span className="text-[11px] font-black text-slate-700">{phase.progress}%</span>
                                      <span className="text-[10px] font-bold text-slate-500 flex items-center gap-1">
                                         <span className="w-1 h-1 rounded-full bg-slate-400"></span>
