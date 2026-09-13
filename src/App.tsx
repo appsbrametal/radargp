@@ -2400,10 +2400,10 @@ function DashboardView({ tickets, onNavigateToList }) {
   const statusData = Object.keys(statusCounts).map(key => ({ name: key, quantidade: statusCounts[key], fill: STATUS_COLORS[key] || '#8884d8' })).sort((a, b) => b.quantidade - a.quantidade);
 
   const analystMap = {};
-  chartTickets.forEach(t => { 
+  chartTickets.forEach(t => {
     const a = t.analyst || 'Não Atribuído';
     if (!analystMap[a]) {
-      analystMap[a] = { name: a, total: 0 };
+      analystMap[a] = { name: a, total: 0, __labelAnchor: 0 };
       activeStatuses.forEach(s => analystMap[a][s] = 0);
     }
     analystMap[a][t.status] += 1;
@@ -2412,10 +2412,10 @@ function DashboardView({ tickets, onNavigateToList }) {
   const analystData = Object.values(analystMap).sort((a, b) => b.total - a.total);
 
   const keyUserMap = {};
-  chartTickets.forEach(t => { 
+  chartTickets.forEach(t => {
     const k = t.keyUser || 'Não Atribuído';
     if (!keyUserMap[k]) {
-      keyUserMap[k] = { name: k, total: 0 };
+      keyUserMap[k] = { name: k, total: 0, __labelAnchor: 0 };
       activeStatuses.forEach(s => keyUserMap[k][s] = 0);
     }
     keyUserMap[k][t.status] += 1;
@@ -2424,10 +2424,10 @@ function DashboardView({ tickets, onNavigateToList }) {
   const keyUserData = Object.values(keyUserMap).sort((a, b) => b.total - a.total);
 
   const sponsorMap = {};
-  chartTickets.forEach(t => { 
+  chartTickets.forEach(t => {
     const s = t.sponsor || 'Não Definido';
     if (!sponsorMap[s]) {
-      sponsorMap[s] = { name: s, total: 0 };
+      sponsorMap[s] = { name: s, total: 0, __labelAnchor: 0 };
       activeStatuses.forEach(st => sponsorMap[s][st] = 0);
     }
     sponsorMap[s][t.status] += 1;
@@ -2478,24 +2478,63 @@ function DashboardView({ tickets, onNavigateToList }) {
   // antes a margem era menor que o deslocamento do texto, então o total
   // ficava cortado sempre que a barra chegava perto do topo do eixo Y.
   //
-  // Segunda causa raiz encontrada ao testar de verdade (não só ler o
-  // código): no Recharts usado aqui (v3), a função de label ligada
-  // diretamente a um <Bar> recebe x/y/width/index/value — mas NUNCA recebe
-  // `payload` com a linha inteira. Como o total só existe no objeto da
-  // linha (analystData[i].total), a checagem antiga (`payload.total`) dava
-  // sempre `undefined` e a função retornava null pra TODAS as barras — ou
-  // seja, o rótulo de total nunca aparecia, não só nas barras mais altas.
-  // A correção usa `index` para buscar a linha certa no array de dados de
-  // origem (fica curried por gráfico, já que cada um tem seu próprio array).
+  // Terceira causa raiz encontrada (testando de verdade, não só lendo o
+  // código): o total estava anexado ao <Bar> do ÚLTIMO status da pilha
+  // (activeStatuses[length-1]). O Recharts descarta silenciosamente
+  // qualquer segmento de altura 0 antes mesmo de gerar o rótulo (ver
+  // node_modules/recharts/.../Bar.js, computeBarRectangles) — então só a
+  // barra em que aquele status específico tivesse pelo menos 1 demanda
+  // ganhava o rótulo; todas as outras, com esse status zerado, perdiam o
+  // total inteiro. Por isso só uma coluna mostrava o número.
+  //
+  // Correção: cada linha de dado ganhou um campo extra `__labelAnchor`
+  // sempre igual a 0, empilhado por cima dos status reais (não muda a
+  // altura visível). Esse Bar usa `shape={() => null}` (não desenha nada)
+  // só para marcar `hasCustomShape`, que faz o Recharts NÃO descartar o
+  // segmento mesmo com altura 0 — garantindo que o rótulo de total seja
+  // calculado e exibido em 100% das colunas, sempre no topo real da pilha.
   const STACKED_CHART_TOP_MARGIN = 28;
   const makeTopLabelRenderer = (dataArray) => (props) => {
     const { x, y, width, index } = props;
     const row = dataArray[index];
-    if (!row || row.total === undefined) return null;
+    if (!row || !row.total) return null;
     return (
       <text x={x + width / 2} y={y - 8} fill="#475569" textAnchor="middle" fontSize={12} fontWeight="bold" className="pointer-events-none">
         {row.total}
       </text>
+    );
+  };
+  const invisibleLabelAnchorShape = () => null;
+
+  // Tooltip compartilhado pelos 3 gráficos empilhados abaixo (Analista / Key
+  // User / Patrocinador): mostra só os status com pelo menos 1 demanda + uma
+  // linha de Total, e esconde o campo técnico __labelAnchor (usado apenas
+  // para forçar o rótulo do total a aparecer, ver nota acima).
+  const StackedTotalTooltip = ({ active, payload, label }) => {
+    if (!active || !payload || !payload.length) return null;
+    const rows = payload.filter(p => p.dataKey !== '__labelAnchor' && p.value > 0);
+    const total = payload[0]?.payload?.total;
+    return (
+      <div className="bg-white p-3 border border-slate-200 shadow-xl rounded-lg text-xs min-w-[160px]">
+        <p className="font-bold text-slate-800 border-b border-slate-100 pb-1.5 mb-1.5">{label}</p>
+        <div className="space-y-1">
+          {rows.map(row => (
+            <div key={row.dataKey} className="flex items-center justify-between gap-4">
+              <span className="flex items-center gap-1.5 text-slate-600">
+                <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ backgroundColor: row.fill || row.color }} />
+                {friendlyStatusLabel(row.dataKey)}
+              </span>
+              <span className="font-semibold text-slate-800">{row.value}</span>
+            </div>
+          ))}
+        </div>
+        {total !== undefined && (
+          <div className="flex items-center justify-between gap-4 border-t border-slate-100 mt-1.5 pt-1.5">
+            <span className="font-bold text-slate-700">Total</span>
+            <span className="font-bold text-slate-900">{total}</span>
+          </div>
+        )}
+      </div>
     );
   };
 
@@ -2806,10 +2845,11 @@ function DashboardView({ tickets, onNavigateToList }) {
                 <CartesianGrid strokeDasharray="3 3" vertical={false} />
                 <XAxis dataKey="name" tick={{fontSize: 11, fill: '#475569'}} angle={-45} textAnchor="end" />
                 <YAxis />
-                <RechartsTooltip cursor={{fill: '#f1f5f9'}} contentStyle={{borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)'}} />
-                {activeStatuses.map((status, index) => (
-                   <Bar key={status} dataKey={status} stackId="a" fill={STATUS_COLORS[status] || '#CBD5E1'} cursor="pointer" onClick={handleAnalystToggle} className="hover:opacity-80 transition-opacity" label={index === activeStatuses.length - 1 ? makeTopLabelRenderer(analystData) : null} />
+                <RechartsTooltip content={<StackedTotalTooltip />} cursor={{fill: '#f1f5f9'}} />
+                {activeStatuses.map((status) => (
+                   <Bar key={status} dataKey={status} stackId="a" fill={STATUS_COLORS[status] || '#CBD5E1'} cursor="pointer" onClick={handleAnalystToggle} className="hover:opacity-80 transition-opacity" />
                 ))}
+                <Bar dataKey="__labelAnchor" stackId="a" fill="transparent" stroke="none" isAnimationActive={false} tooltipType="none" shape={invisibleLabelAnchorShape} label={makeTopLabelRenderer(analystData)} />
               </BarChart>
             </ResponsiveContainer>
           ) : <p className="text-center text-slate-400 mt-20">Sem dados para este filtro.</p>}
@@ -2822,10 +2862,11 @@ function DashboardView({ tickets, onNavigateToList }) {
                 <CartesianGrid strokeDasharray="3 3" vertical={false} />
                 <XAxis dataKey="name" tick={{fontSize: 11, fill: '#475569'}} angle={-45} textAnchor="end" />
                 <YAxis />
-                <RechartsTooltip cursor={{fill: '#f1f5f9'}} contentStyle={{borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)'}} />
-                {activeStatuses.map((status, index) => (
-                   <Bar key={status} dataKey={status} stackId="a" fill={STATUS_COLORS[status] || '#CBD5E1'} cursor="pointer" onClick={handleKeyUserToggle} className="hover:opacity-80 transition-opacity" label={index === activeStatuses.length - 1 ? makeTopLabelRenderer(keyUserData) : null} />
+                <RechartsTooltip content={<StackedTotalTooltip />} cursor={{fill: '#f1f5f9'}} />
+                {activeStatuses.map((status) => (
+                   <Bar key={status} dataKey={status} stackId="a" fill={STATUS_COLORS[status] || '#CBD5E1'} cursor="pointer" onClick={handleKeyUserToggle} className="hover:opacity-80 transition-opacity" />
                 ))}
+                <Bar dataKey="__labelAnchor" stackId="a" fill="transparent" stroke="none" isAnimationActive={false} tooltipType="none" shape={invisibleLabelAnchorShape} label={makeTopLabelRenderer(keyUserData)} />
               </BarChart>
             </ResponsiveContainer>
           ) : <p className="text-center text-slate-400 mt-20">Sem dados para este filtro.</p>}
@@ -2838,10 +2879,11 @@ function DashboardView({ tickets, onNavigateToList }) {
                 <CartesianGrid strokeDasharray="3 3" vertical={false} />
                 <XAxis dataKey="name" tick={{fontSize: 11, fill: '#475569'}} angle={-45} textAnchor="end" />
                 <YAxis />
-                <RechartsTooltip cursor={{fill: '#f1f5f9'}} contentStyle={{borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)'}} />
-                {activeStatuses.map((status, index) => (
-                   <Bar key={status} dataKey={status} stackId="a" fill={STATUS_COLORS[status] || '#CBD5E1'} cursor="pointer" onClick={handleSponsorToggle} className="hover:opacity-80 transition-opacity" label={index === activeStatuses.length - 1 ? makeTopLabelRenderer(sponsorData) : null} />
+                <RechartsTooltip content={<StackedTotalTooltip />} cursor={{fill: '#f1f5f9'}} />
+                {activeStatuses.map((status) => (
+                   <Bar key={status} dataKey={status} stackId="a" fill={STATUS_COLORS[status] || '#CBD5E1'} cursor="pointer" onClick={handleSponsorToggle} className="hover:opacity-80 transition-opacity" />
                 ))}
+                <Bar dataKey="__labelAnchor" stackId="a" fill="transparent" stroke="none" isAnimationActive={false} tooltipType="none" shape={invisibleLabelAnchorShape} label={makeTopLabelRenderer(sponsorData)} />
               </BarChart>
             </ResponsiveContainer>
           ) : <p className="text-center text-slate-400 mt-20">Sem dados para este filtro.</p>}
