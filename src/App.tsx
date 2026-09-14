@@ -6,7 +6,7 @@ import {
 import { 
   LayoutDashboard, ListTodo, BookOpen, Search, Filter, 
   Plus, X, Edit, Calendar, User, UserCircle, CheckCircle2,
-  AlertCircle, Clock, Save, Sparkles, Loader2, Bot, FileText,
+  AlertCircle, Clock, Save, Sparkles, Loader2, FileText,
   AlignLeft, CalendarDays, Activity, Trash2, AlertTriangle,
   Database, FileSpreadsheet, FileJson, FolderTree,
   ChevronUp, ChevronDown, ChevronLeft, ChevronRight, ArrowUpDown, RefreshCcw, Printer, Kanban, XCircle, Tag,
@@ -14,7 +14,6 @@ import {
   Radio, LogIn, TrendingUp, Bell, AtSign, Link2, Zap
 } from 'lucide-react';
 import { db, doc, setDoc, deleteDoc, collection, onSnapshot } from './lib/dataStore';
-import { callClaudeWithRetry } from './lib/claude';
 import {
   fetchProfile,
   signInWithPassword,
@@ -3016,8 +3015,6 @@ function StatusReportView({ tickets, onSelect, reports = [], onSaveReport, onDel
   const [filterKeyUser, setFilterKeyUser] = useState('Todos');
   const [filterType, setFilterType] = useState('Todos');
   const [filterTicket, setFilterTicket] = useState('Todas');
-  const [aiReport, setAiReport] = useState('');
-  const [isGenerating, setIsGenerating] = useState(false);
   const [viewingPastReport, setViewingPastReport] = useState<any>(null);
 
   const sprints = useMemo(() => ['Todas', ...new Set(tickets.map(t => t.sprint || 'Sem Sprint'))].sort(), [tickets]);
@@ -3044,32 +3041,6 @@ function StatusReportView({ tickets, onSelect, reports = [], onSaveReport, onDel
     setViewingPastReport(null);
   }, [filterSprint, filterKeyUser, filterType, filterTicket]);
 
-  const handleGenerateAIReport = async () => {
-    setIsGenerating(true);
-    setAiReport('');
-    setViewingPastReport(null);
-    
-    const dataStr = filteredTickets.map(t => 
-      `ID: ${t.id} | Status: ${t.status} | Progresso: ${t.progress}% | Responsável: ${t.analyst} | Key User: ${t.keyUser}\nDescrição: ${t.description}\nÚltimo Apontamento (Diário): ${t.logs?.[0]?.text || 'Nenhum registro'}`
-    ).join('\n\n---\n\n');
-
-    const prompt = `Atue como um Diretor de PMO (Project Management Office) especialista em relatórios executivos. Escreva um "Status Report Executivo" profissional e direto ao ponto com base na seguinte lista de demandas/projetos de TI.\n\nRegras de formatação (use SOMENTE Markdown puro, evite tags HTML):\n1. Inicie com um "Resumo Geral do Portfólio" destacando a saúde geral (quantas estão bem, quantas estão bloqueadas/paralisadas).\n2. Crie uma seção de "Principais Avanços" (destaques positivos).\n3. Crie uma seção crítica de "Pontos de Atenção e Riscos" (focando explicitamente nos projetos com problemas, bloqueios ou atrasos lidos nos últimos diários).\n4. Finalize com "Recomendações e Próximos Passos".\n\nDADOS REAIS DOS PROJETOS PARA ANALISAR:\n${dataStr || 'Nenhum projeto encontrado nos filtros.'}`;
-
-    try {
-      const result = await callClaudeWithRetry(prompt);
-      setAiReport(result);
-    } catch (e) {
-      // Mostra o motivo real (agora que callClaudeWithRetry devolve a
-      // mensagem de verdade vinda do servidor, em vez de um erro genérico) —
-      // essencial para diagnosticar se o problema é chave da Anthropic
-      // ausente, function não publicada, etc.
-      const detail = e instanceof Error ? e.message : String(e);
-      setAiReport(`❌ Ocorreu um erro ao gerar o Status Report com a IA.\n\nDetalhe técnico: ${detail}`);
-    } finally {
-      setIsGenerating(false);
-    }
-  };
-
   const handlePrint = () => {
     window.print();
   };
@@ -3080,7 +3051,7 @@ function StatusReportView({ tickets, onSelect, reports = [], onSaveReport, onDel
     return acc;
   }, {});
 
-  const displayedReport = viewingPastReport ? viewingPastReport.content : aiReport;
+  const displayedReport = viewingPastReport ? viewingPastReport.content : '';
 
   return (
     <div className="space-y-6 max-w-7xl mx-auto">
@@ -3129,33 +3100,20 @@ function StatusReportView({ tickets, onSelect, reports = [], onSaveReport, onDel
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 items-start">
         <div className="xl:col-span-1 flex flex-col gap-6 print:hidden">
-          <div className="bg-gradient-to-br from-indigo-50 to-purple-50 rounded-xl shadow-sm border border-indigo-200 overflow-hidden flex flex-col">
-            <div className="p-4 border-b border-indigo-200/50 flex justify-between items-center bg-white/50 backdrop-blur-sm">
-              <h3 className="font-bold text-indigo-900 flex items-center gap-2"><Sparkles size={18} className="text-indigo-600"/> Resumo Executivo (IA)</h3>
+          <div className="bg-slate-50 rounded-xl shadow-sm border border-slate-200 overflow-hidden flex flex-col">
+            <div className="p-4 border-b border-slate-200 flex justify-between items-center bg-white">
+              <h3 className="font-bold text-slate-500 flex items-center gap-2"><Sparkles size={18} className="text-slate-400"/> Resumo Executivo (IA)</h3>
             </div>
-            <div className="p-5 flex flex-col gap-4">
-              <p className="text-xs text-indigo-800 font-medium leading-relaxed">
-                A Inteligência Artificial irá ler o progresso, o status e as <strong>últimas atualizações do diário de bordo</strong> de todos os {filteredTickets.length} projetos selecionados e criará um Status Report pronto a ser enviado.
+            {/* Geração por IA temporariamente desativada (14/09/2026): a Edge
+                Function de IA (ai-proxy) não estava publicada no projeto,
+                fazendo esta tela sempre mostrar um erro de conexão. Removido
+                por enquanto o botão/chamada até a IA voltar a ser configurada
+                — o histórico de relatórios já gerados continua disponível e
+                consultável normalmente ao lado, pois não depende da IA. */}
+            <div className="p-5 flex flex-col gap-2">
+              <p className="text-xs text-slate-500 leading-relaxed">
+                A geração de Status Report com Inteligência Artificial está temporariamente desativada. Os relatórios já salvos no histórico continuam disponíveis ao lado.
               </p>
-              
-              {!isGenerating && (
-                <button onClick={handleGenerateAIReport} disabled={filteredTickets.length === 0} className="w-full bg-indigo-600 text-white px-5 py-3 rounded-xl text-sm font-bold flex justify-center items-center gap-2 shadow-sm hover:bg-indigo-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed">
-                  <Bot size={18} /> {aiReport || viewingPastReport ? 'Regerar Relatório Atual' : 'Gerar Status Report com IA'}
-                </button>
-              )}
-
-              {isGenerating && (
-                <div className="flex flex-col items-center justify-center py-8 gap-3">
-                  <Loader2 className="animate-spin text-indigo-600" size={32} />
-                  <span className="text-xs font-bold text-indigo-800 animate-pulse">A analisar diários e redigir o relatório...</span>
-                </div>
-              )}
-
-              {aiReport && !isGenerating && !viewingPastReport && (
-                 <button onClick={() => onSaveReport(aiReport, `Sprint: ${filterSprint} | Key User: ${filterKeyUser} | Tipo: ${filterType} | Demanda: ${filterTicket}`)} className="w-full bg-emerald-600 text-white px-4 py-2.5 rounded-lg text-sm font-bold flex justify-center items-center gap-2 hover:bg-emerald-700 transition-colors shadow-sm">
-                   <Save size={16} /> Salvar no Histórico
-                 </button>
-              )}
             </div>
           </div>
 
@@ -3183,11 +3141,11 @@ function StatusReportView({ tickets, onSelect, reports = [], onSaveReport, onDel
         </div>
 
         <div className="xl:col-span-2 flex flex-col gap-6">
-          {(displayedReport || viewingPastReport) && (
+          {viewingPastReport && (
             <div className="bg-white rounded-xl shadow-sm border border-indigo-200 overflow-hidden flex flex-col print:border-none print:shadow-none">
               <div className="p-4 border-b border-slate-200 bg-indigo-50/50 flex justify-between items-center print:hidden">
                  <h3 className="font-bold text-indigo-900 flex items-center gap-2">
-                   {viewingPastReport ? <><Database size={18} className="text-indigo-600"/> Lendo Relatório Histórico ({new Date(viewingPastReport.createdAt).toLocaleString('pt-BR')})</> : <><Sparkles size={18} className="text-indigo-600"/> Relatório Executivo Gerado</>}
+                   <Database size={18} className="text-indigo-600"/> Lendo Relatório Histórico ({new Date(viewingPastReport.createdAt).toLocaleString('pt-BR')})
                  </h3>
                  {viewingPastReport && (
                    <button onClick={() => setViewingPastReport(null)} className="text-xs bg-white border border-slate-300 px-3 py-1.5 rounded-lg font-bold text-slate-600 hover:bg-slate-50 transition-colors shadow-sm">
@@ -4012,7 +3970,6 @@ function TicketModal({ ticket, tickets = [], projects = [], demandTypes = [], sy
   });
   const [newLog, setNewLog] = useState('');
   const [activeTab, setActiveTab] = useState('geral');
-  const [isEnhancingScope, setIsEnhancingScope] = useState(false);
 
   const [editingLogId, setEditingLogId] = useState<any>(null);
   const [editingLogText, setEditingLogText] = useState('');
@@ -4104,26 +4061,6 @@ function TicketModal({ ticket, tickets = [], projects = [], demandTypes = [], sy
         ...(field === 'progress' ? { progress: newOverallProgress } : {})
       };
     });
-  };
-
-  const handleEnhanceScope = async () => {
-    if (!formData.scope) return;
-    setIsEnhancingScope(true);
-    const prompt = `Atue como um Analista de Requisitos Sênior. Expanda e melhore o seguinte escopo de um chamado/demanda de TI, detalhando limites, requisitos e entregáveis de forma profissional, clara e estruturada. Se faltarem informações de contexto, inclua placeholders apropriados. Retorne apenas o texto melhorado. Escopo original: "${formData.scope}"`;
-    try {
-      const result = await callClaudeWithRetry(prompt);
-      setFormData(prev => ({ ...prev, scope: result }));
-    } catch (e) {
-      // Antes esse erro só ia pro console — o botão parava de girar e nada
-      // mais acontecia, parecendo que a IA "não fez nada". Agora mostra o
-      // motivo real (chave ausente, function não publicada, erro da
-      // Anthropic, etc.) direto pro usuário.
-      const detail = e instanceof Error ? e.message : String(e);
-      if (showToast) showToast(`Erro ao melhorar escopo com IA: ${detail}`, "error");
-      console.error("Erro ao melhorar escopo:", e);
-    } finally {
-      setIsEnhancingScope(false);
-    }
   };
 
   const handleAddLog = () => {
@@ -4312,14 +4249,8 @@ function TicketModal({ ticket, tickets = [], projects = [], demandTypes = [], sy
                  </div>
 
                  <div className="relative">
-                   <div className="flex justify-between items-center mb-1">
-                     <label className="text-xs font-bold text-slate-500 uppercase">Escopo</label>
-                     <button onClick={handleEnhanceScope} disabled={isEnhancingScope || !formData.scope} type="button" className="text-[10px] bg-indigo-50 text-indigo-600 hover:bg-indigo-100 px-2 py-0.5 rounded font-bold transition-colors flex items-center gap-1 disabled:opacity-50">
-                       {isEnhancingScope ? <Loader2 size={10} className="animate-spin" /> : <Sparkles size={10} />}
-                       ✨ Melhorar Escopo
-                     </button>
-                   </div>
-                   <textarea rows="3" value={formData.scope || ''} onChange={e=>setFormData({...formData, scope: e.target.value})} className="w-full border border-slate-300 rounded-lg p-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50 focus:bg-white" placeholder="Escreva um esboço dos limites e entregas e clique em '✨ Melhorar Escopo'..." />
+                   <label className="text-xs font-bold text-slate-500 uppercase mb-1 block">Escopo</label>
+                   <textarea rows="3" value={formData.scope || ''} onChange={e=>setFormData({...formData, scope: e.target.value})} className="w-full border border-slate-300 rounded-lg p-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50 focus:bg-white" placeholder="Escreva um esboço dos limites e das entregas..." /* botão "✨ Melhorar Escopo" (IA) removido em 14/09/2026 — ver comentário em StatusReportView sobre a Edge Function ai-proxy não publicada */ />
                  </div>
 
                  <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
