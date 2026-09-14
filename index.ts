@@ -1,84 +1,129 @@
-// Supabase Edge Function: ai-proxy
+// Supabase Edge Function: admin-users
 //
-// Recebe { prompt: string } de um usuário já autenticado (o Supabase verifica
-// o JWT automaticamente antes de chamar este handler) e repassa para a API
-// da Anthropic (Claude), devolvendo { text: string }.
+// Cria ou apaga um login (usuário no Supabase Auth + a linha correspondente
+// em `profiles`). Isso exige a service_role key, que nunca pode ir para o
+// navegador — por isso mora aqui, no servidor.
 //
-// A chave da Anthropic (ANTHROPIC_API_KEY) fica só aqui, como "secret" da
-// função — nunca é exposta ao navegador. Configure com:
-//   supabase secrets set ANTHROPIC_API_KEY=sk-ant-...
+// Segurança: confere que quem está a chamar tem um JWT válido (verificado
+// automaticamente pelo Supabase antes de chegar aqui) e que o perfil desse
+// usuário tem a role "Admin", antes de fazer qualquer coisa.
 //
-// Deploy: supabase functions deploy ai-proxy
+// Secrets necessários (o Supabase já define os dois primeiros
+// automaticamente em produção; para rodar local com `supabase start` eles
+// também ficam disponíveis):
+//   SUPABASE_URL
+//   SUPABASE_SERVICE_ROLE_KEY
+//
+// Deploy: supabase functions deploy admin-users
 
-const ANTHROPIC_API_KEY = Deno.env.get('ANTHROPIC_API_KEY');
-// Atualizado de "claude-sonnet-4-5-20250929" (Claude Sonnet 4.5) para
-// "claude-sonnet-5" (Claude Sonnet 5, o Sonnet atual) em 13/09/2026: o
-// modelo anterior tem data de retirada prevista para não antes de
-// 29/09/2026 — a poucos dias, na época desta troca — o que faria a IA
-// parar de responder (chamadas à API da Anthropic passariam a falhar com
-// "modelo não encontrado/retirado"). Pode ser sobrescrito por variável de
-// ambiente (`supabase secrets set ANTHROPIC_MODEL=...`) sem precisar mexer
-// no código, caso a Anthropic lance um modelo mais novo no futuro.
-const MODEL = Deno.env.get('ANTHROPIC_MODEL') || 'claude-sonnet-5';
+import { createClient } from 'npm:@supabase/supabase-js@2';
+
+const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
+const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
+function jsonResponse(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+  });
+}
+
 Deno.serve(async (req: Request) => {
-  if (req.method === 'OPTIONS') {
-    return new Response('ok', { headers: corsHeaders });
+  if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
+
+  const authHeader = req.headers.get('Authorization');
+  if (!authHeader) return jsonResponse({ error: 'Não autenticado.' }, 401);
+
+  // Client "como o usuário que chamou", só para checar quem é e se é Admin.
+  const callerClient = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
+    global: { headers: { Authorization: authHeader } },
+  });
+  const {
+    data: { user: caller },
+  } = await callerClient.auth.getUser();
+  if (!caller) return jsonResponse({ error: 'Não autenticado.' }, 401);
+
+  const { data: callerProfile } = await callerClient.from('profiles').select('roles').eq('id', caller.id).maybeSingle();
+  if (!callerProfile?.roles?.includes('Admin')) {
+    return jsonResponse({ error: 'Apenas administradores podem gerir usuários.' }, 403);
   }
 
-  if (!ANTHROPIC_API_KEY) {
-    return new Response(JSON.stringify({ error: 'ANTHROPIC_API_KEY não configurada no servidor.' }), {
-      status: 500,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-    });
-  }
+  // Client com privilégio total, para de facto criar/apagar o login.
+  const adminClient = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
 
   try {
-    const { prompt } = await req.json();
-    if (!prompt || typeof prompt !== 'string') {
-      return new Response(JSON.stringify({ error: 'Campo "prompt" (string) é obrigatório.' }), {
-        status: 400,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    const body = await req.json();
+
+    if (body.action === 'create') {
+      const { email, password, username, name, roles } = body;
+      if (!email || !password || !username || !name || !Array.isArray(roles)) {
+        return jsonResponse({ error: 'Campos obrigatórios: email, password, username, name, roles[].' }, 400);
+      }
+
+      const { data: created, error: createError } = await adminClient.auth.admin.createUser({
+        email,
+        password,
+        email_confirm: true,
       });
+      if (createError || !created.user) {
+        return jsonResponse({ error: createError?.message || 'Erro ao criar usuário.' }, 400);
+      }
+
+      const { error: profileError } = await adminClient.from('profiles').insert({
+        id: created.user.id,
+        username,
+        name,
+        email,
+        roles,
+        blocked: false,
+      });
+      if (profileError) {
+        // Reverte a criação do login se o perfil não puder ser gravado, para não deixar órfão.
+        await adminClient.auth.admin.deleteUser(created.user.id);
+        return jsonResponse({ error: profileError.message }, 400);
+      }
+
+      return jsonResponse({ id: created.user.id });
     }
 
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: MODEL,
-        max_tokens: 2048,
-        messages: [{ role: 'user', content: prompt }],
-      }),
-    });
+    if (body.action === 'delete') {
+      const { userId } = body;
+      if (!userId) return jsonResponse({ error: 'Campo obrigatório: userId.' }, 400);
+      if (userId === caller.id) return jsonResponse({ error: 'Não é possível remover o próprio usuário logado.' }, 400);
 
-    if (!response.ok) {
-      const errText = await response.text();
-      return new Response(JSON.stringify({ error: `Erro da API da Anthropic: ${errText}` }), {
-        status: 502,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
+      await adminClient.from('profiles').delete().eq('id', userId);
+      const { error: deleteError } = await adminClient.auth.admin.deleteUser(userId);
+      if (deleteError) return jsonResponse({ error: deleteError.message }, 400);
+
+      return jsonResponse({ ok: true });
     }
 
-    const data = await response.json();
-    const text = data?.content?.[0]?.text ?? '';
+    // Permite ao Admin definir uma nova senha para qualquer usuário direto
+    // pelo sistema (Controle de Acessos), sem precisar entrar no painel do
+    // Supabase. Não exige a senha atual do usuário-alvo (quem chama já foi
+    // confirmado como Admin acima) — é um reset administrativo, não uma
+    // troca de senha pelo próprio dono da conta (essa outra é feita pelo
+    // cliente via `supabase.auth.updateUser`, ver src/lib/auth.ts).
+    if (body.action === 'reset-password') {
+      const { userId, newPassword } = body;
+      if (!userId || !newPassword) return jsonResponse({ error: 'Campos obrigatórios: userId, newPassword.' }, 400);
+      if (typeof newPassword !== 'string' || newPassword.length < 6) {
+        return jsonResponse({ error: 'A nova senha deve ter pelo menos 6 caracteres.' }, 400);
+      }
 
-    return new Response(JSON.stringify({ text }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-    });
+      const { error: updateError } = await adminClient.auth.admin.updateUserById(userId, { password: newPassword });
+      if (updateError) return jsonResponse({ error: updateError.message }, 400);
+
+      return jsonResponse({ ok: true });
+    }
+
+    return jsonResponse({ error: 'Ação desconhecida. Use "create", "delete" ou "reset-password".' }, 400);
   } catch (error) {
-    return new Response(JSON.stringify({ error: String(error) }), {
-      status: 500,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-    });
+    return jsonResponse({ error: String(error) }, 500);
   }
 });
