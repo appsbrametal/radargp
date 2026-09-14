@@ -23,7 +23,7 @@ import {
   onAuthStateChange,
   updateOwnPassword,
 } from './lib/auth';
-import { adminCreateUser, adminDeleteUser } from './lib/adminUsers';
+import { adminCreateUser, adminDeleteUser, adminResetUserPassword } from './lib/adminUsers';
 import html2canvas from 'html2canvas-pro';
 import { jsPDF } from 'jspdf';
 
@@ -1101,6 +1101,14 @@ export default function App() {
     } catch (e) { showToast("Erro ao remover usuário.", "error"); }
   };
 
+  // Reset administrativo: o Admin define uma nova senha para OUTRO usuário
+  // direto pelo sistema, sem precisar do painel do Supabase. Lança em caso
+  // de erro para o modal exibir a mensagem (mesmo padrão de handleSaveAppUser).
+  const handleResetUserPassword = async (userId, newPassword) => {
+    await adminResetUserPassword(userId, newPassword);
+    showToast("Senha redefinida com sucesso!", "success");
+  };
+
   // NOTA: o código original tinha aqui handleSaveRole/handleDeleteRole/hasPermission,
   // que liam um estado `rolesConfig` que nunca chegou a ser declarado (nenhum
   // useState, nenhuma tela usava essas funções). Isso não compilava fora do
@@ -1453,7 +1461,7 @@ export default function App() {
           {activeTab === 'pdfexport' && <PdfReportView tickets={accessibleTickets} showToast={showToast} />}
           {activeTab === 'export' && <DataExportView tickets={accessibleTickets} projects={projects} demandTypes={demandTypes} systems={systems} appUsers={appUsers} sponsors={sponsors} onImportJSON={handleImportJSON} />}
           {activeTab === 'accesslogs' && <AccessLogsView accessLogs={accessLogs} presence={presence} />}
-          {activeTab === 'settings' && <SettingsView demandTypes={demandTypes} onAdd={handleSaveDemandType} onDelete={handleDeleteDemandType} systems={systems} onAddSystem={handleSaveSystem} onDeleteSystem={handleDeleteSystem} appUsers={appUsers} onSaveAppUser={handleSaveAppUser} onDeleteAppUser={handleDeleteAppUser} sponsors={sponsors} onSaveSponsor={handleSaveSponsor} onDeleteSponsor={handleDeleteSponsor} sprints={sprints} onAddSprint={handleSaveSprint} onDeleteSprint={handleDeleteSprint} automationRules={automationRules} onSaveAutomationRule={handleSaveAutomationRule} onDeleteAutomationRule={handleDeleteAutomationRule} />}
+          {activeTab === 'settings' && <SettingsView demandTypes={demandTypes} onAdd={handleSaveDemandType} onDelete={handleDeleteDemandType} systems={systems} onAddSystem={handleSaveSystem} onDeleteSystem={handleDeleteSystem} appUsers={appUsers} onSaveAppUser={handleSaveAppUser} onDeleteAppUser={handleDeleteAppUser} onResetUserPassword={handleResetUserPassword} sponsors={sponsors} onSaveSponsor={handleSaveSponsor} onDeleteSponsor={handleDeleteSponsor} sprints={sprints} onAddSprint={handleSaveSprint} onDeleteSprint={handleDeleteSprint} automationRules={automationRules} onSaveAutomationRule={handleSaveAutomationRule} onDeleteAutomationRule={handleDeleteAutomationRule} />}
         </div>
       </main>
 
@@ -2039,10 +2047,11 @@ function ConfigSection({ title, description, items, onAddItem, onDeleteItem, pla
   );
 }
 
-function UserManagementSection({ appUsers, onSaveAppUser, onDeleteAppUser }) {
+function UserManagementSection({ appUsers, onSaveAppUser, onDeleteAppUser, onResetUserPassword }) {
   const [editingUser, setEditingUser] = useState<any>(null);
   const [isSavingUser, setIsSavingUser] = useState(false);
   const [saveError, setSaveError] = useState('');
+  const [resettingPasswordUser, setResettingPasswordUser] = useState<any>(null);
 
   const handleEdit = (user) => setEditingUser(user);
   const handleNew = () => setEditingUser({ id: '', name: '', username: '', email: '', password: '', roles: ['Analista'], blocked: false });
@@ -2106,6 +2115,7 @@ function UserManagementSection({ appUsers, onSaveAppUser, onDeleteAppUser }) {
                    <td className="py-3 px-4 text-center">
                      <div className="flex items-center justify-center gap-2">
                        <button onClick={() => handleEdit(u)} className="p-1.5 text-slate-400 hover:text-blue-600 bg-white rounded shadow-sm border border-slate-200 transition-colors"><Edit size={14}/></button>
+                       <button onClick={() => setResettingPasswordUser(u)} className="p-1.5 text-slate-400 hover:text-indigo-600 bg-white rounded shadow-sm border border-slate-200 transition-colors" title="Redefinir senha"><KeyRound size={14}/></button>
                        <button onClick={() => onSaveAppUser({...u, blocked: !u.blocked})} disabled={u.username === 'admin'} className="p-1.5 text-slate-400 hover:text-orange-600 bg-white rounded shadow-sm border border-slate-200 transition-colors disabled:opacity-30" title={u.blocked ? "Desbloquear usuario" : "Bloquear usuario"}>{u.blocked ? <Unlock size={14}/> : <Lock size={14}/>}</button>
                        <button onClick={() => onDeleteAppUser(u.id)} disabled={u.username === 'admin'} className="p-1.5 text-slate-400 hover:text-red-600 bg-white rounded shadow-sm border border-slate-200 transition-colors disabled:opacity-30"><Trash2 size={14}/></button>
                      </div>
@@ -2125,7 +2135,7 @@ function UserManagementSection({ appUsers, onSaveAppUser, onDeleteAppUser }) {
                {saveError && <div className="p-3 bg-red-50 text-red-700 text-sm rounded-lg font-medium border border-red-100">{saveError}</div>}
                {!isNewUser && (
                  <div className="p-3 bg-blue-50 text-blue-700 text-xs rounded-lg border border-blue-100">
-                   A senha de usuários existentes não é editada aqui. Peça para a pessoa usar "Esqueci minha senha" na tela de login, ou redefina pelo painel do Supabase.
+                   A senha não é editada aqui. Feche este formulário e use o botão <KeyRound size={12} className="inline -mt-0.5"/> "Redefinir senha" na lista de usuários.
                  </div>
                )}
                <div><label className="block text-xs font-bold text-slate-500 uppercase mb-1">Nome de Exibição (Aparece nos Filtros)</label><input type="text" value={editingUser.name} onChange={e=>setEditingUser({...editingUser, name: e.target.value})} className="w-full border border-slate-300 rounded-lg p-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500" placeholder="Ex: João Silva" /></div>
@@ -2157,6 +2167,70 @@ function UserManagementSection({ appUsers, onSaveAppUser, onDeleteAppUser }) {
            </div>
          </div>
        )}
+
+       {resettingPasswordUser && (
+         <AdminResetPasswordModal
+           user={resettingPasswordUser}
+           onClose={() => setResettingPasswordUser(null)}
+           onSave={onResetUserPassword}
+         />
+       )}
+    </div>
+  );
+}
+
+// Reset de senha PELO ADMIN, para QUALQUER usuário — diferente do
+// ResetPasswordModal (auto-atendimento, pede a senha atual). Aqui quem
+// preenche é o Admin, então não faz sentido pedir a senha atual do dono da
+// conta: a própria tela de "Controle de Acessos" já é restrita a Admins.
+function AdminResetPasswordModal({ user, onClose, onSave }) {
+  const [newPass, setNewPass] = useState('');
+  const [confirmPass, setConfirmPass] = useState('');
+  const [error, setError] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError('');
+    if (newPass !== confirmPass) { setError("As novas senhas não coincidem."); return; }
+    if (newPass.length < 6) { setError("A nova senha deve ter pelo menos 6 caracteres."); return; }
+    setIsSaving(true);
+    try {
+      await onSave(user.id, newPass);
+      onClose();
+    } catch (err: any) {
+      setError(err?.message || "Não foi possível redefinir a senha.");
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-slate-900/50 flex items-center justify-center z-[9999] p-4">
+      <form onSubmit={handleSubmit} className="bg-white rounded-xl shadow-2xl w-full max-w-sm overflow-hidden animate-in fade-in">
+        <div className="p-4 border-b border-slate-200 bg-slate-50 flex justify-between items-center">
+          <h3 className="font-bold text-lg text-slate-800">Redefinir Senha</h3>
+          <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-700"><X size={20}/></button>
+        </div>
+        <div className="p-6 space-y-4">
+          <p className="text-xs text-slate-500">
+            Defina uma nova senha para <span className="font-bold text-slate-700">{user.name}</span> ({user.username}). O usuário poderá trocá-la depois pelo próprio perfil.
+          </p>
+          {error && <div className="p-3 bg-red-50 text-red-700 text-sm rounded-lg font-medium border border-red-100">{error}</div>}
+          <div>
+            <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Nova Senha</label>
+            <input type="password" autoComplete="new-password" required value={newPass} onChange={e=>setNewPass(e.target.value)} className="w-full border border-slate-300 rounded-lg p-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50 focus:bg-white" placeholder="Mínimo 6 caracteres..." />
+          </div>
+          <div>
+            <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Confirmar Nova Senha</label>
+            <input type="password" autoComplete="new-password" required value={confirmPass} onChange={e=>setConfirmPass(e.target.value)} className="w-full border border-slate-300 rounded-lg p-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50 focus:bg-white" placeholder="Repita a nova senha..." />
+          </div>
+        </div>
+        <div className="p-4 border-t border-slate-200 bg-slate-50 flex justify-end gap-3">
+          <button type="button" onClick={onClose} className="px-4 py-2 text-slate-600 bg-white border border-slate-300 rounded-lg font-bold text-sm">Cancelar</button>
+          <button type="submit" disabled={isSaving} className="px-4 py-2 bg-blue-600 text-white rounded-lg font-bold text-sm hover:bg-blue-700 disabled:opacity-60">{isSaving ? 'A guardar...' : 'Guardar Senha'}</button>
+        </div>
+      </form>
     </div>
   );
 }
@@ -2194,7 +2268,7 @@ function SponsorConfigSection({ items, onSave, onDelete }) {
   );
 }
 
-function SettingsView({ demandTypes, onAdd, onDelete, systems, onAddSystem, onDeleteSystem, appUsers, onSaveAppUser, onDeleteAppUser, sponsors, onSaveSponsor, onDeleteSponsor, sprints, onAddSprint, onDeleteSprint, automationRules, onSaveAutomationRule, onDeleteAutomationRule }) {
+function SettingsView({ demandTypes, onAdd, onDelete, systems, onAddSystem, onDeleteSystem, appUsers, onSaveAppUser, onDeleteAppUser, onResetUserPassword, sponsors, onSaveSponsor, onDeleteSponsor, sprints, onAddSprint, onDeleteSprint, automationRules, onSaveAutomationRule, onDeleteAutomationRule }) {
   const [activeSettingsTab, setActiveSettingsTab] = useState('listas');
 
   return (
@@ -2217,7 +2291,7 @@ function SettingsView({ demandTypes, onAdd, onDelete, systems, onAddSystem, onDe
          <AutomationRulesSection rules={automationRules} appUsers={appUsers} onSave={onSaveAutomationRule} onDelete={onDeleteAutomationRule} />
        )}
        {activeSettingsTab === 'usuarios' && (
-         <UserManagementSection appUsers={appUsers} onSaveAppUser={onSaveAppUser} onDeleteAppUser={onDeleteAppUser} />
+         <UserManagementSection appUsers={appUsers} onSaveAppUser={onSaveAppUser} onDeleteAppUser={onDeleteAppUser} onResetUserPassword={onResetUserPassword} />
        )}
     </div>
   );
