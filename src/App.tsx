@@ -4015,6 +4015,22 @@ function TicketModal({ ticket, tickets = [], projects = [], demandTypes = [], sy
     setEditingPhase({ oldName: phaseName, newName: phaseName });
   };
 
+  // Reordena as fases do cronograma (trocando com a vizinha imediata) — pedido
+  // do usuário para poder ajustar a ordem das etapas na Tabela de Fases (e,
+  // por consequência, no gráfico de Gantt/Cronograma acima, que usa a mesma
+  // ordem de `customSteps`). `formData.customSteps` já vem sempre preenchido
+  // (ver useState inicial de TicketModal, que copia SCHEDULE_STEPS quando o
+  // ticket ainda não tem fases customizadas), então não precisa de fallback.
+  const handleMovePhase = (index, direction) => {
+    setFormData(prev => {
+      const steps = [...prev.customSteps];
+      const newIndex = index + direction;
+      if (newIndex < 0 || newIndex >= steps.length) return prev;
+      [steps[index], steps[newIndex]] = [steps[newIndex], steps[index]];
+      return { ...prev, customSteps: steps };
+    });
+  };
+
   const saveEditPhase = () => {
     const trimmed = editingPhase.newName.trim();
     if (trimmed && trimmed !== editingPhase.oldName && !formData.customSteps.includes(trimmed)) {
@@ -4669,7 +4685,7 @@ function TicketModal({ ticket, tickets = [], projects = [], demandTypes = [], sy
                        </tr>
                      </thead>
                      <tbody className="divide-y divide-slate-100">
-                       {stepsToUse.map(step => {
+                       {stepsToUse.map((step, index) => {
                          const sData = formData.schedule[step] || {};
                          const isEditing = editingPhase.oldName === step;
                          return (
@@ -4683,7 +4699,13 @@ function TicketModal({ ticket, tickets = [], projects = [], demandTypes = [], sy
                                   </div>
                                 ) : (
                                   <div className="flex justify-between items-center">
-                                    <span className="font-semibold text-slate-700 text-xs truncate pr-2" title={step}>{step}</span>
+                                    <div className="flex items-center gap-1 min-w-0">
+                                      <div className="flex flex-col shrink-0 -my-1">
+                                        <button onClick={()=>handleMovePhase(index, -1)} disabled={index === 0} className="text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded disabled:opacity-25 disabled:hover:bg-transparent disabled:hover:text-slate-400 transition-colors" title="Mover para cima"><ChevronUp size={13}/></button>
+                                        <button onClick={()=>handleMovePhase(index, 1)} disabled={index === stepsToUse.length - 1} className="text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded disabled:opacity-25 disabled:hover:bg-transparent disabled:hover:text-slate-400 transition-colors" title="Mover para baixo"><ChevronDown size={13}/></button>
+                                      </div>
+                                      <span className="font-semibold text-slate-700 text-xs truncate pr-2" title={step}>{step}</span>
+                                    </div>
                                     <div className="hidden group-hover:flex items-center gap-1 shrink-0">
                                       <button onClick={()=>startEditPhase(step)} className="text-blue-500 hover:bg-blue-50 p-1 rounded transition-colors" title="Editar Nome"><Edit size={14}/></button>
                                       <button onClick={()=>handleDeletePhase(step)} className="text-red-500 hover:bg-red-50 p-1 rounded transition-colors" title="Excluir Fase"><Trash2 size={14}/></button>
