@@ -140,7 +140,8 @@ const initialAppUsers = [
 ];
 
 const STATUS_COLORS = {
-  '1 - Em analise': '#64748B', 
+  '0 - Backlog': '#94A3B8',
+  '1 - Em analise': '#64748B',
   '2 - Consult. - DAM': '#8B5CF6', 
   '3 - Área de Neg. - DAM': '#D946EF', 
   '4 - Consult. - EF': '#EC4899', 
@@ -1190,23 +1191,72 @@ export default function App() {
     catch (error) { showToast("Erro ao gravar Sprint no banco de dados.", "error"); }
   };
 
-  const handleUpdateTicketStatus = async (ticketId, newStatus) => {
-    if (!systemUser) return;
-    const ticketToUpdate = tickets.find(t => t.id === ticketId);
-    if (!ticketToUpdate || ticketToUpdate.status === newStatus) return;
+  // Mudança de coluna E reordenação vertical dentro da mesma coluna do Kanban
+  // são a MESMA operação (mover uma demanda para uma posição específica numa
+  // lista ordenada por status) — por isso um único handler cobre os dois
+  // casos, em vez de ter `handleUpdateTicketStatus` (só trocava status, sem
+  // guardar posição) e um handler de reorder separado.
+  //
+  // `insertBeforeTicketId`: id da demanda imediatamente ANTES da qual a
+  // demanda arrastada deve ficar, dentro da coluna `targetStatus`; `null`
+  // significa "no fim da coluna" (drop em espaço vazio, abaixo dos cards).
+  //
+  // A posição é persistida no próprio ticket (`kanbanOrder`, um número
+  // sequencial por coluna de status — não precisa de migração de schema
+  // porque a tabela `tickets` já guarda cada demanda como jsonb). A ordem é
+  // recalculada a partir de TODAS as demandas daquele status em `tickets`
+  // (não só as que o usuário atual enxerga no Kanban, que podem estar menos
+  // filtradas por Sprint/Analista/Key User ali, ou a menos por permissão de
+  // acesso) — assim arrastar nunca bagunça a posição relativa de demandas
+  // que este usuário nem está vendo.
+  const handleReorderKanban = async (draggedTicketId, targetStatus, insertBeforeTicketId) => {
+    if (!systemUser || draggedTicketId === insertBeforeTicketId) return;
+    const draggedTicket = tickets.find(t => t.id === draggedTicketId);
+    if (!draggedTicket) return;
+
+    const statusChanged = draggedTicket.status !== targetStatus;
+
+    const columnTickets = tickets
+      .filter(t => t.status === targetStatus && t.id !== draggedTicketId)
+      .sort((a, b) => (a.kanbanOrder ?? 0) - (b.kanbanOrder ?? 0));
+
+    let insertIndex = columnTickets.length; // padrão: no fim da coluna
+    if (insertBeforeTicketId) {
+      const idx = columnTickets.findIndex(t => t.id === insertBeforeTicketId);
+      if (idx !== -1) insertIndex = idx;
+    }
+    columnTickets.splice(insertIndex, 0, draggedTicket);
 
     const today = new Date().toISOString().split('T')[0];
     const nowIso = new Date().toISOString();
-    const currentHistory = ticketToUpdate.statusHistory || [{ status: ticketToUpdate.status, date: ticketToUpdate.logs?.[0]?.date || today }];
-    const newHistory = [...currentHistory, { status: newStatus, date: today }];
+    const newHistory = statusChanged
+      ? [...(draggedTicket.statusHistory || [{ status: draggedTicket.status, date: draggedTicket.logs?.[0]?.date || today }]), { status: targetStatus, date: today }]
+      : null;
 
-    setTickets(prev => prev.map(t => t.id === ticketId ? { ...t, status: newStatus, statusHistory: newHistory, lastUpdatedAt: nowIso } : t));
+    const patches = columnTickets.map((t, index) => {
+      const patch: Record<string, unknown> = { kanbanOrder: index };
+      if (t.id === draggedTicketId && statusChanged) {
+        patch.status = targetStatus;
+        patch.statusHistory = newHistory;
+        patch.lastUpdatedAt = nowIso;
+      }
+      return { id: t.id, patch };
+    });
+
+    setTickets(prev => prev.map(t => {
+      const found = patches.find(p => p.id === t.id);
+      return found ? { ...t, ...found.patch } : t;
+    }));
+
     try {
-      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'tickets', ticketId), { status: newStatus, statusHistory: newHistory, lastUpdatedAt: nowIso }, { merge: true });
-      showToast(`Status atualizado para ${newStatus}`, "success");
-      runAutomationRules({ ...ticketToUpdate, status: newStatus }, newStatus);
+      await Promise.all(patches.map(p => setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'tickets', p.id), p.patch, { merge: true })));
+      if (statusChanged) {
+        showToast(`Status atualizado para ${targetStatus}`, "success");
+        runAutomationRules({ ...draggedTicket, status: targetStatus }, targetStatus);
+      }
+    } catch (error) {
+      showToast(statusChanged ? "Erro ao gravar novo status." : "Erro ao gravar nova ordem.", "error");
     }
-    catch (error) { showToast("Erro ao gravar novo status.", "error"); }
   };
 
   const handleImportJSON = (event) => {
@@ -1454,7 +1504,7 @@ export default function App() {
           {activeTab === 'statistics' && <StatisticsDashboardView tickets={accessibleTickets} />}
           {activeTab === 'projects' && <ProjectsView projects={projects} tickets={accessibleTickets} onSaveProject={handleSaveProject} onDeleteProject={handleDeleteProject} onSelectTicket={(t) => { setSelectedTicket(t); setIsNewTicket(false); }} systemUser={systemUser} />}
           {activeTab === 'roadmap' && <RoadmapView tickets={accessibleTickets} sponsors={sponsors} systems={systems} onSelect={setSelectedTicket} />}
-          {activeTab === 'kanban' && <KanbanView tickets={accessibleTickets} onSelect={setSelectedTicket} onStatusChange={handleUpdateTicketStatus} />}
+          {activeTab === 'kanban' && <KanbanView tickets={accessibleTickets} onSelect={setSelectedTicket} onReorder={handleReorderKanban} />}
           {activeTab === 'list' && <TicketList tickets={accessibleTickets} onSelect={setSelectedTicket} onDeleteClick={setTicketToDelete} onUpdateSprint={handleUpdateSprint} filterStatus={listFilterStatus} setFilterStatus={setListFilterStatus} demandTypes={demandTypes} systems={systems} sponsors={sponsors} sprints={sprints} />}
           {activeTab === 'statusreport' && <StatusReportView tickets={accessibleTickets} onSelect={setSelectedTicket} reports={reports} onSaveReport={handleSaveReport} onDeleteReport={handleDeleteReport} />}
           {activeTab === 'pdfexport' && <PdfReportView tickets={accessibleTickets} showToast={showToast} />}
@@ -3867,10 +3917,14 @@ function PrintableOnePage({ ticket, pageNumber, totalPages }) {
   );
 }
 
-function KanbanView({ tickets, onSelect, onStatusChange }) {
+function KanbanView({ tickets, onSelect, onReorder }) {
   const [filterSprint, setFilterSprint] = useState('Todas');
   const [filterKeyUser, setFilterKeyUser] = useState('Todos');
   const [filterAnalyst, setFilterAnalyst] = useState('Todos');
+  // Id do card sobre o qual um drag está passando no momento — só para
+  // desenhar a linha azul indicando onde a demanda arrastada vai entrar (não
+  // afeta a ordem de fato, isso só acontece no onDrop).
+  const [dragOverTicketId, setDragOverTicketId] = useState<string | null>(null);
 
   const sprints = useMemo(() => ['Todas', ...new Set(tickets.map(t => t.sprint || 'Sem Sprint'))].sort(), [tickets]);
   const keyUsers = useMemo(() => ['Todos', ...new Set(tickets.map(t => t.keyUser).filter(Boolean))].sort(), [tickets]);
@@ -3885,8 +3939,25 @@ function KanbanView({ tickets, onSelect, onStatusChange }) {
     });
   }, [tickets, filterSprint, filterKeyUser, filterAnalyst]);
 
-  const handleDrop = (e, status) => { e.preventDefault(); const id = e.dataTransfer.getData("ticketId"); if (id) onStatusChange(id, status); };
-  
+  // Drop em espaço vazio da coluna (abaixo do último card, ou coluna vazia):
+  // manda a demanda pro FIM dessa coluna. Drop em cima de um card específico
+  // (handleCardDrop) insere imediatamente antes dele — essa segunda função
+  // chama stopPropagation para o evento não "vazar" e acionar esta aqui também.
+  const handleColumnDrop = (e, status) => {
+    e.preventDefault();
+    setDragOverTicketId(null);
+    const id = e.dataTransfer.getData("ticketId");
+    if (id) onReorder(id, status, null);
+  };
+
+  const handleCardDrop = (e, status, targetTicketId) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragOverTicketId(null);
+    const id = e.dataTransfer.getData("ticketId");
+    if (id && id !== targetTicketId) onReorder(id, status, targetTicketId);
+  };
+
   return (
     <div className="flex flex-col h-full space-y-4">
       <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 flex flex-wrap gap-4 items-center shrink-0">
@@ -3916,20 +3987,36 @@ function KanbanView({ tickets, onSelect, onStatusChange }) {
       <div className="flex-1 overflow-x-auto overflow-y-hidden">
         <div className="flex gap-4 h-full pb-4 items-start min-w-max">
           {STATUS_OPTIONS.map(status => {
-            const columnTickets = filteredTickets.filter(t => t.status === status);
+            // Ordenada por `kanbanOrder` (posição salva ao arrastar); demandas
+            // sem essa posição (nunca reordenadas ainda) mantêm a ordem em que
+            // já chegavam antes dessa funcionalidade existir — sort() é
+            // estável, então o `|| 0` empata todas elas e a ordem original é
+            // preservada.
+            const columnTickets = filteredTickets
+              .filter(t => t.status === status)
+              .sort((a, b) => (a.kanbanOrder ?? 0) - (b.kanbanOrder ?? 0));
             return (
-              <div key={status} className="bg-slate-100 rounded-xl flex flex-col shrink-0 w-[320px] max-h-full border border-slate-200 shadow-sm" onDragOver={e=>e.preventDefault()} onDrop={e=>handleDrop(e, status)}>
+              <div key={status} className="bg-slate-100 rounded-xl flex flex-col shrink-0 w-[320px] max-h-full border border-slate-200 shadow-sm" onDragOver={e=>e.preventDefault()} onDrop={e=>handleColumnDrop(e, status)}>
                 <div className="p-3 border-b border-slate-200 bg-slate-50/50 rounded-t-xl"><h3 className="font-bold text-sm text-slate-700">{status}</h3></div>
                 <div className="p-3 flex-1 overflow-y-auto space-y-3 min-h-[150px]">
                   {columnTickets.map(ticket => (
-                    <div key={ticket.id} draggable onDragStart={e => e.dataTransfer.setData("ticketId", ticket.id)} onClick={() => onSelect(ticket)} className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 cursor-pointer hover:border-blue-400 overflow-hidden flex flex-col min-w-0">
+                    <div
+                      key={ticket.id}
+                      draggable
+                      onDragStart={e => e.dataTransfer.setData("ticketId", ticket.id)}
+                      onDragEnd={() => setDragOverTicketId(null)}
+                      onDragOver={e => { e.preventDefault(); e.stopPropagation(); if (dragOverTicketId !== ticket.id) setDragOverTicketId(ticket.id); }}
+                      onDrop={e => handleCardDrop(e, status, ticket.id)}
+                      onClick={() => onSelect(ticket)}
+                      className={`bg-white p-4 rounded-xl shadow-sm border-x border-b cursor-pointer hover:border-blue-400 overflow-hidden flex flex-col min-w-0 border-slate-200 transition-colors ${dragOverTicketId === ticket.id ? 'border-t-[3px] border-t-blue-500' : 'border-t'}`}
+                    >
                        <div className="flex justify-between items-start mb-2 gap-2">
                          <span className="text-xs font-bold text-blue-600 truncate min-w-0 flex-1">{ticket.id}</span>
                          <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full shrink-0" style={{ backgroundColor: `${PRIORITY_COLORS[ticket.priority || 'Média']}15`, color: PRIORITY_COLORS[ticket.priority || 'Média'] }}>{ticket.priority || 'Média'}</span>
                        </div>
 
                        <p className="text-sm text-slate-700 font-medium mb-3 line-clamp-2 break-words">{ticket.description}</p>
-                       
+
                        <div className="flex flex-col gap-1.5 mb-3 bg-slate-50 rounded p-2 border border-slate-100 overflow-hidden min-w-0">
                          <div className="flex items-center gap-1.5 text-xs text-slate-600 min-w-0" title={`Key User: ${ticket.keyUser}`}>
                            <User size={13} className="text-blue-500 shrink-0" />
