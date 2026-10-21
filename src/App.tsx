@@ -1373,14 +1373,25 @@ export default function App() {
   const accessibleTickets = useMemo(() => {
     if (!systemUser || !systemUser.roles) return [];
     if (systemUser.roles.includes('Admin')) return tickets;
-    
+
     const isAnalyst = systemUser.roles.includes('Analista');
     const isKeyUser = systemUser.roles.includes('Key User');
-    
+
     return tickets.filter(t => {
       const asAnalyst = isAnalyst && t.analyst === systemUser.name;
       const asKeyUser = isKeyUser && t.keyUser === systemUser.name;
-      return asAnalyst || asKeyUser;
+      // Equipe de execução (campo "Recursos" da demanda, aba Equipe &
+      // Envolvidos): além de Analista/Key User responsáveis, quem foi
+      // alocado como recurso também precisa enxergar a demanda — vale para
+      // qualquer papel (não só Analista), por isso não tem um `isX &&` na
+      // frente igual às duas condições acima. `recursos` é o campo atual
+      // (array de nomes); `recurso` é o campo legado (nome único, de antes
+      // de a demanda suportar múltiplos recursos) — mantido aqui pelo mesmo
+      // motivo que o resto do app ainda trata os dois (ver TicketModal e
+      // PrintableOnePage).
+      const resourceNames = t.recursos?.length > 0 ? t.recursos : (t.recurso ? [t.recurso] : []);
+      const asRecurso = resourceNames.includes(systemUser.name);
+      return asAnalyst || asKeyUser || asRecurso;
     });
   }, [tickets, systemUser]);
 
